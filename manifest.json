@@ -23,5 +23,10 @@
   ],
   "background": {
     "service_worker": "background.js"
+  },
+  "icons": {
+    "16": "128.png",
+    "48": "128.png",
+    "128": "128.png"
   }
 }
