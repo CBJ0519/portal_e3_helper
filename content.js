@@ -4140,8 +4140,70 @@ function collectAssignmentInfo() {
 
 // ==================== 同步功能 ====================
 
+// 檢查 extension context 是否有效
+function isExtensionContextValid() {
+  try {
+    // 嘗試訪問 chrome.runtime.id，如果失效會拋出錯誤
+    return !!(chrome && chrome.runtime && chrome.runtime.id);
+  } catch (e) {
+    return false;
+  }
+}
+
+// 顯示 extension context 失效警告
+function showExtensionInvalidWarning() {
+  const sidebar = document.getElementById('e3-helper-sidebar');
+  if (!sidebar) return;
+
+  const existingWarning = document.getElementById('e3-helper-context-warning');
+  if (existingWarning) return; // 已經顯示過了
+
+  const warning = document.createElement('div');
+  warning.id = 'e3-helper-context-warning';
+  warning.style.cssText = `
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: linear-gradient(135deg, #ff6b6b 0%, #ee5a6f 100%);
+    color: white;
+    padding: 24px;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    z-index: 10001;
+    max-width: 300px;
+    text-align: center;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  `;
+  warning.innerHTML = `
+    <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
+    <div style="font-size: 16px; font-weight: 600; margin-bottom: 12px;">擴充功能已更新</div>
+    <div style="font-size: 14px; margin-bottom: 20px; opacity: 0.9;">請重新整理頁面以繼續使用</div>
+    <button onclick="location.reload()" style="
+      background: white;
+      color: #ff6b6b;
+      border: none;
+      padding: 10px 24px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    " onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+      重新整理頁面
+    </button>
+  `;
+  document.body.appendChild(warning);
+}
+
 // 更新同步狀態顯示
 function updateSyncStatus() {
+  if (!isExtensionContextValid()) {
+    console.warn('E3 Helper: Extension context 已失效，請重新整理頁面');
+    showExtensionInvalidWarning();
+    return;
+  }
+
   chrome.storage.local.get(['lastSync', 'lastSyncTime'], (result) => {
     const syncTimeEl = document.getElementById('e3-helper-sync-time');
     if (!syncTimeEl) return;
@@ -4211,6 +4273,13 @@ function getTimeAgo(timestamp) {
 
 // 手動觸發同步
 function manualSync() {
+  // 檢查 extension context 是否有效
+  if (!isExtensionContextValid()) {
+    console.warn('E3 Helper: Extension context 已失效，請重新整理頁面');
+    showExtensionInvalidWarning();
+    return;
+  }
+
   const syncBtn = document.getElementById('e3-helper-sync-btn');
   const syncTimeEl = document.getElementById('e3-helper-sync-time');
 
@@ -4340,6 +4409,12 @@ function bindSyncButton() {
 
 // 初始化
 async function init() {
+  // 檢查 extension context 是否有效
+  if (!isExtensionContextValid()) {
+    console.error('E3 Helper: Extension context 已失效，無法初始化');
+    return;
+  }
+
   // 先從 storage 載入作業、課程、成績和公告資料
   const storage = await chrome.storage.local.get(['assignments', 'courses', 'gradeData', 'announcements', 'readAnnouncements', 'lastSyncTime']);
 
