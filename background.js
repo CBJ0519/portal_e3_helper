@@ -290,7 +290,31 @@ async function syncAssignments() {
     });
     console.log(`E3 Helper: 已合併 ${mergedCount} 個手動狀態到 ${assignments.length} 個作業`);
 
+    // 找出那些已標記為「已繳交」但不在新列表中的舊作業（可能已過期但用戶想保留）
+    const newAssignmentIds = new Set(assignments.map(a => a.eventId));
+    const keptOldAssignments = oldAssignments
+      .filter(oldAssignment => {
+        // 保留條件：不在新列表中 && 手動標記為已繳交
+        return !newAssignmentIds.has(oldAssignment.eventId) &&
+               statuses[oldAssignment.eventId] === 'submitted';
+      })
+      .map(oldAssignment => {
+        // 確保 manualStatus 是最新的
+        return {
+          ...oldAssignment,
+          manualStatus: statuses[oldAssignment.eventId]
+        };
+      });
+
+    if (keptOldAssignments.length > 0) {
+      console.log(`E3 Helper: 保留 ${keptOldAssignments.length} 個已繳交的舊作業:`,
+                  keptOldAssignments.map(a => ({ id: a.eventId, name: a.name, status: a.manualStatus })));
+      // 將舊作業加到列表末尾
+      assignments.push(...keptOldAssignments);
+    }
+
     // 對於沒有課程名稱的作業，嘗試從 API 獲取完整資訊
+    // 注意：這個檢查要在保留舊作業之後，才能涵蓋所有作業（包括保留的舊作業）
     const assignmentsWithoutCourse = assignments.filter(a => !a.course || a.course === '');
     if (assignmentsWithoutCourse.length > 0) {
       console.log(`E3 Helper: 發現 ${assignmentsWithoutCourse.length} 個作業沒有課程名稱，嘗試從 API 獲取...`);
@@ -323,29 +347,6 @@ async function syncAssignments() {
           console.error(`E3 Helper: 獲取作業 ${assignment.eventId} 詳細資訊失敗:`, error);
         }
       }
-    }
-
-    // 找出那些已標記為「已繳交」但不在新列表中的舊作業（可能已過期但用戶想保留）
-    const newAssignmentIds = new Set(assignments.map(a => a.eventId));
-    const keptOldAssignments = oldAssignments
-      .filter(oldAssignment => {
-        // 保留條件：不在新列表中 && 手動標記為已繳交
-        return !newAssignmentIds.has(oldAssignment.eventId) &&
-               statuses[oldAssignment.eventId] === 'submitted';
-      })
-      .map(oldAssignment => {
-        // 確保 manualStatus 是最新的
-        return {
-          ...oldAssignment,
-          manualStatus: statuses[oldAssignment.eventId]
-        };
-      });
-
-    if (keptOldAssignments.length > 0) {
-      console.log(`E3 Helper: 保留 ${keptOldAssignments.length} 個已繳交的舊作業:`,
-                  keptOldAssignments.map(a => ({ id: a.eventId, name: a.name, status: a.manualStatus })));
-      // 將舊作業加到列表末尾
-      assignments.push(...keptOldAssignments);
     }
 
     // 儲存作業列表
