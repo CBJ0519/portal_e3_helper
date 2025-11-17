@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "NYCU E3 Helper",
+  "version": "1.1",
+  "description": "優化 NYCU E3 使用體驗：直接進入作業繳交區、快速存取等功能，支援跨網頁使用",
+  "permissions": [
+    "storage",
+    "downloads",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://e3.nycu.edu.tw/*",
+    "https://e3p.nycu.edu.tw/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": ["jszip.min.js", "content.js"],
+      "run_at": "document_end"
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}
