@@ -32,6 +32,65 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse(result);
     });
     return true;
+  } else if (request.action === 'updateBadge') {
+    // 更新擴充功能圖標 badge
+    const count = request.count || 0;
+    console.log(`E3 Helper: 更新 badge 計數 - ${count}`);
+
+    if (chrome.action) {
+      if (count > 0) {
+        chrome.action.setBadgeText({ text: count > 99 ? '99+' : count.toString() });
+        chrome.action.setBadgeBackgroundColor({ color: '#dc3545' });
+      } else {
+        chrome.action.setBadgeText({ text: '' });
+      }
+    } else {
+      console.warn('E3 Helper: chrome.action API 不可用');
+    }
+
+    sendResponse({ success: true });
+    return true;
+  } else if (request.action === 'showNotification') {
+    // 發送桌面通知
+    console.log(`E3 Helper: 發送通知 - ${request.title}`);
+
+    chrome.notifications.create({
+      type: 'basic',
+      iconUrl: 'chrome-extension://' + chrome.runtime.id + '/128.png',
+      title: request.title,
+      message: request.message,
+      priority: 2,
+      requireInteraction: false
+    }, (notificationId) => {
+      if (chrome.runtime.lastError) {
+        console.error('E3 Helper: 發送通知失敗', chrome.runtime.lastError);
+        sendResponse({ success: false });
+      } else {
+        console.log(`E3 Helper: 通知已發送，ID: ${notificationId}`);
+        sendResponse({ success: true });
+      }
+    });
+
+    return true;
+  } else if (request.action === 'checkParticipants') {
+    // 手動觸發成員檢測
+    console.log('E3 Helper: 收到手動成員檢測請求');
+    checkParticipantsInTabs();
+    sendResponse({ success: true, message: '已觸發成員檢測' });
+    return true;
+  } else if (request.action === 'callAI') {
+    // 處理 AI API 請求
+    handleAIRequest(request)
+      .then(response => sendResponse({ success: true, data: response }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
+  } else if (request.action === 'loadAnnouncementsAndMessages') {
+    // 從非 E3 網站請求載入公告和信件
+    console.log('E3 Helper: 收到載入公告和信件的請求');
+    loadAnnouncementsAndMessagesInBackground()
+      .then(result => sendResponse(result))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
   }
 });
 
@@ -46,15 +105,62 @@ chrome.runtime.onInstalled.addListener(() => {
     periodInMinutes: 60
   });
 
+  // 設定每小時檢查課程成員變動
+  chrome.alarms.create('checkParticipants', {
+    periodInMinutes: 60
+  });
+
   // 立即執行一次同步
   syncE3Data();
+
+  // 初始化 badge 計數
+  updateBadgeFromStorage();
 });
+
+// Service Worker 啟動時也更新 badge
+chrome.runtime.onStartup.addListener(() => {
+  console.log('E3 Helper: Service Worker 啟動');
+  updateBadgeFromStorage();
+});
+
+// 從 storage 更新 badge 計數
+async function updateBadgeFromStorage() {
+  try {
+    if (!chrome.action) {
+      console.warn('E3 Helper: chrome.action API 不可用，跳過 badge 更新');
+      return;
+    }
+
+    const storage = await chrome.storage.local.get(['notifications', 'participantChangeNotifications', 'urgentAssignmentNotifications']);
+    const assignmentNotifications = storage.notifications || [];
+    const participantNotifications = storage.participantChangeNotifications || [];
+    const urgentNotifications = storage.urgentAssignmentNotifications || [];
+
+    const unreadCount = assignmentNotifications.filter(n => !n.read).length +
+                        participantNotifications.filter(n => !n.read).length +
+                        urgentNotifications.filter(n => !n.read).length;
+
+    if (unreadCount > 0) {
+      chrome.action.setBadgeText({ text: unreadCount > 99 ? '99+' : unreadCount.toString() });
+      chrome.action.setBadgeBackgroundColor({ color: '#dc3545' });
+    } else {
+      chrome.action.setBadgeText({ text: '' });
+    }
+
+    console.log(`E3 Helper: Badge 已更新 - ${unreadCount} 個未讀通知`);
+  } catch (error) {
+    console.error('E3 Helper: 更新 badge 時發生錯誤', error);
+  }
+}
 
 // 監聽定時器
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'syncE3Data') {
     console.log('E3 Helper: 定時同步觸發');
     syncE3Data();
+  } else if (alarm.name === 'checkParticipants') {
+    console.log('E3 Helper: 定時檢查課程成員變動');
+    checkParticipantsInTabs();
   }
 });
 
@@ -267,6 +373,10 @@ async function syncAssignments() {
     let mergedCount = 0;
     const oldAssignmentMap = new Map(oldAssignments.map(a => [a.eventId, a]));
 
+    // 定義無效的課程名稱（這些是頁面標題，不是真正的課程名稱）
+    const invalidCourseNames = ['焦點綜覽', '通知', '時間軸', 'Timeline', 'Notifications', '概覽', 'Overview'];
+    const isInvalidCourse = (course) => !course || course === '' || invalidCourseNames.includes(course);
+
     assignments.forEach(assignment => {
       const oldAssignment = oldAssignmentMap.get(assignment.eventId);
 
@@ -277,10 +387,15 @@ async function syncAssignments() {
         console.log(`E3 Helper: 合併狀態 - 作業 ${assignment.eventId}: ${statuses[assignment.eventId]}`);
       }
 
-      // 如果新作業沒有課程名稱，但舊資料有，則保留舊的課程名稱
-      if (!assignment.course && oldAssignment && oldAssignment.course) {
+      // 如果新作業沒有課程名稱（或是無效名稱），但舊資料有有效課程名稱，則保留舊的
+      if (isInvalidCourse(assignment.course) && oldAssignment && oldAssignment.course && !isInvalidCourse(oldAssignment.course)) {
         assignment.course = oldAssignment.course;
         console.log(`E3 Helper: 保留課程名稱 - 作業 ${assignment.eventId}: ${oldAssignment.course}`);
+      }
+
+      // 如果新作業的課程名稱無效，清空它（讓後續 API 補齊）
+      if (isInvalidCourse(assignment.course)) {
+        assignment.course = '';
       }
 
       // 如果新作業沒有 URL，但舊資料有，則保留舊的 URL
@@ -299,11 +414,19 @@ async function syncAssignments() {
                statuses[oldAssignment.eventId] === 'submitted';
       })
       .map(oldAssignment => {
-        // 確保 manualStatus 是最新的
-        return {
+        // 確保 manualStatus 是最新的，並清理無效的課程名稱
+        const cleanedAssignment = {
           ...oldAssignment,
           manualStatus: statuses[oldAssignment.eventId]
         };
+
+        // 如果課程名稱無效，清空它（讓後續 API 補齊）
+        if (isInvalidCourse(cleanedAssignment.course)) {
+          cleanedAssignment.course = '';
+          console.log(`E3 Helper: 保留的舊作業 ${cleanedAssignment.eventId} 有無效課程名稱，已清空`);
+        }
+
+        return cleanedAssignment;
       });
 
     if (keptOldAssignments.length > 0) {
@@ -348,6 +471,9 @@ async function syncAssignments() {
         }
       }
     }
+
+    // 檢測新作業並發送通知
+    await detectAndNotifyNewAssignments(assignments, oldAssignments);
 
     // 儲存作業列表
     await chrome.storage.local.set({ assignments: assignments });
@@ -411,6 +537,136 @@ async function syncCourses() {
   return [];
 }
 
+// 檢測新作業並發送通知
+async function detectAndNotifyNewAssignments(newAssignments, oldAssignments) {
+  try {
+    // 獲取已通知的作業列表
+    const storage = await chrome.storage.local.get(['notifiedAssignments']);
+    const notifiedAssignments = new Set(storage.notifiedAssignments || []);
+
+    // 建立舊作業 ID 集合
+    const oldAssignmentIds = new Set(oldAssignments.map(a => a.eventId));
+
+    // 找出真正的新作業（不在舊列表中，且未通知過）
+    const newlyAddedAssignments = newAssignments.filter(assignment => {
+      return !oldAssignmentIds.has(assignment.eventId) &&
+             !notifiedAssignments.has(assignment.eventId);
+    });
+
+    if (newlyAddedAssignments.length > 0) {
+      console.log(`E3 Helper: 發現 ${newlyAddedAssignments.length} 個新作業`);
+
+      // 為每個新作業發送通知
+      for (const assignment of newlyAddedAssignments) {
+        await sendAssignmentNotification(assignment);
+        notifiedAssignments.add(assignment.eventId);
+      }
+
+      // 儲存已通知的作業列表
+      await chrome.storage.local.set({
+        notifiedAssignments: Array.from(notifiedAssignments)
+      });
+    }
+  } catch (error) {
+    console.error('E3 Helper: 檢測新作業時發生錯誤', error);
+  }
+}
+
+// 發送作業通知
+async function sendAssignmentNotification(assignment) {
+  try {
+    // 計算剩餘時間
+    const now = Date.now();
+    const deadline = assignment.deadline;
+    const timeLeft = deadline - now;
+    const daysLeft = Math.floor(timeLeft / (1000 * 60 * 60 * 24));
+    const hoursLeft = Math.floor((timeLeft % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+
+    let timeText = '';
+    if (daysLeft > 0) {
+      timeText = `剩餘 ${daysLeft} 天 ${hoursLeft} 小時`;
+    } else if (hoursLeft > 0) {
+      timeText = `剩餘 ${hoursLeft} 小時`;
+    } else if (timeLeft > 0) {
+      const minutesLeft = Math.floor(timeLeft / (1000 * 60));
+      timeText = `剩餘 ${minutesLeft} 分鐘`;
+    } else {
+      timeText = '已逾期';
+    }
+
+    // 發送桌面通知
+    await chrome.notifications.create(`assignment-${assignment.eventId}`, {
+      type: 'basic',
+      iconUrl: 'chrome-extension://' + chrome.runtime.id + '/128.png',
+      title: '📝 新作業上架！',
+      message: `${assignment.name}\n📚 課程：${assignment.course}\n⏰ ${timeText}`,
+      priority: 2,
+      requireInteraction: false
+    });
+
+    // 儲存到通知中心
+    const storage = await chrome.storage.local.get(['notifications']);
+    const notifications = storage.notifications || [];
+
+    const notification = {
+      id: `assignment-${assignment.eventId}-${now}`,
+      type: 'assignment',
+      title: assignment.name,
+      message: `📚 課程：${assignment.course}\n⏰ ${timeText}`,
+      timestamp: now,
+      read: false,
+      url: assignment.url
+    };
+
+    notifications.unshift(notification); // 新通知放在最前面
+
+    // 只保留最近 50 個通知
+    if (notifications.length > 50) {
+      notifications.splice(50);
+    }
+
+    await chrome.storage.local.set({ notifications });
+
+    // 更新 badge 計數
+    if (chrome.action) {
+      const unreadCount = notifications.filter(n => !n.read).length;
+      if (unreadCount > 0) {
+        chrome.action.setBadgeText({ text: unreadCount > 99 ? '99+' : unreadCount.toString() });
+        chrome.action.setBadgeBackgroundColor({ color: '#dc3545' });
+      }
+    }
+
+    console.log(`E3 Helper: 已發送作業通知 - ${assignment.name}`);
+  } catch (error) {
+    console.error('E3 Helper: 發送通知時發生錯誤', error);
+  }
+}
+
+// 監聽通知點擊事件
+chrome.notifications.onClicked.addListener((notificationId) => {
+  if (notificationId.startsWith('assignment-')) {
+    // 提取作業 ID
+    const eventId = notificationId.replace('assignment-', '');
+
+    // 獲取作業資料
+    chrome.storage.local.get(['assignments'], (result) => {
+      const assignments = result.assignments || [];
+      const assignment = assignments.find(a => a.eventId === eventId);
+
+      if (assignment && assignment.url) {
+        // 開啟作業頁面
+        chrome.tabs.create({ url: assignment.url });
+      } else {
+        // 開啟 E3 首頁
+        chrome.tabs.create({ url: 'https://e3p.nycu.edu.tw/' });
+      }
+    });
+
+    // 清除通知
+    chrome.notifications.clear(notificationId);
+  }
+});
+
 // 監聽來自 content script 的連接請求
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === 'e3-helper') {
@@ -425,3 +681,365 @@ chrome.runtime.onConnect.addListener((port) => {
     });
   }
 });
+
+// ==================== 課程成員檢測功能 ====================
+
+// 在所有 E3 tabs 中觸發成員檢測
+async function checkParticipantsInTabs() {
+  console.log('E3 Helper: 開始檢查課程成員變動...');
+
+  try {
+    // 查找所有 E3 網站的 tabs
+    const tabs = await chrome.tabs.query({
+      url: ['https://e3.nycu.edu.tw/*', 'https://e3p.nycu.edu.tw/*']
+    });
+
+    if (tabs.length > 0) {
+      // 向第一個 E3 tab 發送檢查請求
+      const tab = tabs[0];
+      console.log(`E3 Helper: 向 tab ${tab.id} 發送成員檢測請求`);
+
+      chrome.tabs.sendMessage(tab.id, {
+        action: 'checkParticipants'
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error('E3 Helper: 無法與 content script 通訊', chrome.runtime.lastError);
+        } else {
+          console.log('E3 Helper: 成員檢測完成', response);
+        }
+      });
+    } else {
+      console.log('E3 Helper: 沒有開啟的 E3 tabs，無法檢測成員變動');
+    }
+  } catch (error) {
+    console.error('E3 Helper: 檢查課程成員時發生錯誤', error);
+  }
+}
+
+// ==================== AI API 請求處理 ====================
+
+// 帶重試的 fetch 函數（處理 503 等臨時錯誤）
+async function fetchWithRetry(url, options, maxRetries = 3) {
+  let lastError;
+  let lastResponse;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+
+      // 如果響應成功，直接返回
+      if (response.ok) {
+        return response;
+      }
+
+      // 記錄最後一次響應
+      lastResponse = response;
+
+      // 如果是 503 或 429 錯誤且還有重試機會，則重試
+      if ((response.status === 503 || response.status === 429) && attempt < maxRetries) {
+        const retryDelay = Math.pow(2, attempt) * 1000; // 指數退避：1s, 2s, 4s
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+        continue;
+      }
+
+      // 對於其他錯誤狀態碼，或最後一次嘗試，返回響應
+      return response;
+    } catch (error) {
+      lastError = error;
+
+      // 網路錯誤也重試
+      if (attempt < maxRetries) {
+        const retryDelay = Math.pow(2, attempt) * 1000;
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+        continue;
+      }
+    }
+  }
+
+  // 所有重試都失敗，返回最後的響應或拋出錯誤
+  if (lastResponse) {
+    return lastResponse;
+  }
+  throw lastError || new Error('請求失敗');
+}
+
+// 處理 AI API 請求
+async function handleAIRequest(request) {
+  const { provider, config, prompt } = request;
+
+  switch (provider) {
+    case 'ollama':
+      return await callOllamaAPI(config, prompt);
+    case 'openai':
+      return await callOpenAIAPI(config, prompt);
+    case 'gemini':
+      return await callGeminiAPI(config, prompt);
+    case 'custom':
+      return await callCustomAPI(config, prompt);
+    default:
+      throw new Error('未知的 AI 提供商: ' + provider);
+  }
+}
+
+// 調用 Ollama API
+async function callOllamaAPI(config, prompt) {
+  const { url, model, temperature } = config;
+
+  try {
+    const requestBody = {
+      model: model,
+      prompt: prompt,
+      stream: false
+    };
+
+    // 如果提供了 temperature，則添加到請求中
+    if (temperature !== undefined) {
+      requestBody.temperature = temperature;
+    }
+
+    const response = await fetchWithRetry(`${url}/api/generate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify(requestBody)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Ollama API 請求失敗: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    return data.response.trim();
+  } catch (error) {
+    throw error;
+  }
+}
+
+// 調用 OpenAI API
+async function callOpenAIAPI(config, prompt) {
+  const { key, model, temperature } = config;
+
+  try {
+    const requestBody = {
+      model: model,
+      messages: [{
+        role: 'user',
+        content: prompt
+      }]
+    };
+
+    // 如果提供了 temperature，則添加到請求中，否則使用默認值 0.3
+    requestBody.temperature = temperature !== undefined ? temperature : 0.3;
+
+    const response = await fetchWithRetry('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${key}`
+      },
+      body: JSON.stringify(requestBody)
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenAI API 請求失敗: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data.choices[0].message.content.trim();
+  } catch (error) {
+    throw error;
+  }
+}
+
+// 調用 Gemini API
+async function callGeminiAPI(config, prompt) {
+  const { key, model, temperature, thinkingBudget } = config;
+
+  try {
+    const generationConfig = {
+      temperature: temperature !== undefined ? temperature : 0.3,
+      candidateCount: 1
+    };
+
+    if (thinkingBudget !== undefined) {
+      generationConfig.thinkingConfig = {
+        thinkingBudget: thinkingBudget
+      };
+    }
+
+    const requestBody = {
+      contents: [{
+        parts: [{
+          text: prompt
+        }]
+      }],
+      generationConfig: generationConfig
+    };
+
+    const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(requestBody)
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Gemini API 請求失敗: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+
+    // 檢查響應結構
+    if (!data.candidates || data.candidates.length === 0) {
+      throw new Error('Gemini API 沒有返回候選結果');
+    }
+
+    const candidate = data.candidates[0];
+
+    if (candidate.content && candidate.content.parts && candidate.content.parts[0] && candidate.content.parts[0].text) {
+      return candidate.content.parts[0].text.trim();
+    } else if (candidate.text) {
+      return candidate.text.trim();
+    } else if (candidate.output) {
+      return candidate.output.trim();
+    } else {
+      if (candidate.finishReason === 'MAX_TOKENS') {
+        throw new Error('Gemini MAX_TOKENS 錯誤且未返回任何文本，可能是輸入 prompt 太長。');
+      }
+      throw new Error('無法解析 Gemini 響應結構: ' + JSON.stringify(candidate));
+    }
+  } catch (error) {
+    throw error;
+  }
+}
+
+// 調用自定義 API
+async function callCustomAPI(config, prompt) {
+  const { url, key, model, temperature } = config;
+
+  try {
+    const headers = {
+      'Content-Type': 'application/json'
+    };
+
+    if (key) {
+      headers['Authorization'] = `Bearer ${key}`;
+    }
+
+    const requestBody = {
+      model: model,
+      messages: [{
+        role: 'user',
+        content: prompt
+      }],
+      temperature: temperature !== undefined ? temperature : 0.3
+    };
+
+    const response = await fetchWithRetry(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(requestBody)
+    });
+
+    if (!response.ok) {
+      throw new Error(`自定義 API 請求失敗: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data.choices[0].message.content.trim();
+  } catch (error) {
+    throw error;
+  }
+}
+
+// ==================== 載入公告和信件功能 ====================
+
+// 在背景載入公告和信件（通過 E3 標籤頁）
+async function loadAnnouncementsAndMessagesInBackground() {
+  console.log('E3 Helper: 開始在背景載入公告和信件...');
+
+  try {
+    // 查找所有 E3 網站的標籤頁
+    const tabs = await chrome.tabs.query({
+      url: ['https://e3.nycu.edu.tw/*', 'https://e3p.nycu.edu.tw/*']
+    });
+
+    if (tabs.length > 0) {
+      // 使用第一個 E3 標籤頁來載入資料
+      const tab = tabs[0];
+      console.log(`E3 Helper: 使用標籤頁 ${tab.id} 載入資料`);
+
+      // 向該標籤頁發送載入請求
+      return new Promise((resolve, reject) => {
+        chrome.tabs.sendMessage(tab.id, {
+          action: 'loadAnnouncementsAndMessagesInTab'
+        }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.error('E3 Helper: 無法與 content script 通訊', chrome.runtime.lastError);
+            reject(new Error('無法與 E3 標籤頁通訊'));
+          } else if (response && response.success) {
+            console.log('E3 Helper: 資料載入完成');
+            resolve({ success: true, message: '資料已在背景載入完成' });
+          } else {
+            console.error('E3 Helper: 載入失敗', response);
+            reject(new Error(response?.error || '載入失敗'));
+          }
+        });
+      });
+    } else {
+      // 沒有打開的 E3 標籤頁，打開一個新的
+      console.log('E3 Helper: 沒有開啟的 E3 標籤頁，將打開新標籤頁');
+
+      const newTab = await chrome.tabs.create({
+        url: 'https://e3p.nycu.edu.tw/',
+        active: false // 在背景開啟
+      });
+
+      // 等待標籤頁載入完成
+      return new Promise((resolve, reject) => {
+        const timeoutId = setTimeout(() => {
+          reject(new Error('載入超時，請確認已登入 E3'));
+        }, 30000); // 30 秒超時
+
+        // 監聽標籤頁載入完成
+        const listener = (tabId, changeInfo, tab) => {
+          if (tabId === newTab.id && changeInfo.status === 'complete') {
+            chrome.tabs.onUpdated.removeListener(listener);
+
+            // 延遲一下確保 content script 已載入
+            setTimeout(() => {
+              chrome.tabs.sendMessage(newTab.id, {
+                action: 'loadAnnouncementsAndMessagesInTab'
+              }, (response) => {
+                clearTimeout(timeoutId);
+
+                if (chrome.runtime.lastError) {
+                  console.error('E3 Helper: 無法與新標籤頁通訊', chrome.runtime.lastError);
+                  reject(new Error('無法與 E3 標籤頁通訊'));
+                } else if (response && response.success) {
+                  console.log('E3 Helper: 資料載入完成（新標籤頁）');
+                  // 關閉新開的標籤頁
+                  chrome.tabs.remove(newTab.id);
+                  resolve({ success: true, message: '資料已在背景載入完成' });
+                } else {
+                  console.error('E3 Helper: 載入失敗（新標籤頁）', response);
+                  reject(new Error(response?.error || '載入失敗'));
+                }
+              });
+            }, 1000); // 延遲 1 秒
+          }
+        };
+
+        chrome.tabs.onUpdated.addListener(listener);
+      });
+    }
+  } catch (error) {
+    console.error('E3 Helper: 載入公告和信件時發生錯誤', error);
+    throw error;
+  }
+}

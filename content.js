@@ -1,6 +1,268 @@
 // NYCU E3 Helper - Content Script
 // 優化 E3 使用體驗
 
+// ==================== 日誌系統 ====================
+// 用於收集擴充功能操作日誌（完全鏡像 console）
+const e3HelperLogs = [];
+let e3LogIdCounter = 0;
+
+// 保存原始 console 方法
+const originalConsole = {
+  log: console.log,
+  info: console.info,
+  warn: console.warn,
+  error: console.error,
+  debug: console.debug,
+  table: console.table
+};
+
+// 攔截 console 方法
+function interceptConsole() {
+  const interceptMethod = (method, type) => {
+    console[method] = function(...args) {
+      // 調用原始 console 方法
+      originalConsole[method].apply(console, args);
+
+      // 保存到日誌（保存原始參數，不轉成字串）
+      const timestamp = new Date().toLocaleTimeString('zh-TW', { hour12: false });
+      e3HelperLogs.push({
+        id: e3LogIdCounter++,
+        time: timestamp,
+        type: type,
+        method: method,
+        args: args // 保存原始參數
+      });
+
+      // 限制日誌數量
+      if (e3HelperLogs.length > 500) {
+        e3HelperLogs.shift();
+      }
+
+      // 動態更新顯示
+      updateLogDisplay();
+    };
+  };
+
+  interceptMethod('log', 'log');
+  interceptMethod('info', 'info');
+  interceptMethod('warn', 'warn');
+  interceptMethod('error', 'error');
+  interceptMethod('debug', 'debug');
+  interceptMethod('table', 'table');
+}
+
+// ⭐ 立即執行攔截器
+interceptConsole();
+
+// 更新日誌顯示（如果面板已打開）
+function updateLogDisplay() {
+  const logModal = document.getElementById('e3-helper-log-modal');
+  const logContent = document.getElementById('e3-helper-log-content');
+
+  if (logModal && logContent && logModal.classList.contains('show')) {
+    const shouldScroll = logContent.scrollHeight - logContent.scrollTop <= logContent.clientHeight + 100;
+    logContent.innerHTML = getLogsHTML();
+
+    // 重新綁定展開/收合事件
+    attachLogEventListeners();
+
+    // 如果之前在底部，保持在底部
+    if (shouldScroll) {
+      logContent.scrollTop = logContent.scrollHeight;
+    }
+  }
+}
+
+// 清除日誌
+function clearLogs() {
+  e3HelperLogs.length = 0;
+  updateLogDisplay();
+}
+
+// 獲取日誌 HTML
+function getLogsHTML() {
+  if (e3HelperLogs.length === 0) {
+    return '<div class="e3-helper-log-placeholder">尚無日誌記錄</div>';
+  }
+
+  return e3HelperLogs.map(log => renderLogEntry(log)).join('\n');
+}
+
+// 渲染單個日誌條目
+function renderLogEntry(log) {
+  const typeClass = `e3-helper-log-${log.type}`;
+  const icon = {
+    'log': '📝',
+    'info': 'ℹ️',
+    'warn': '⚠️',
+    'error': '❌',
+    'debug': '🐛'
+  }[log.type] || '📝';
+
+  const argsHTML = log.args.map((arg, index) => renderValue(arg, log.id, [index])).join(' ');
+
+  return `<div class="e3-helper-log-entry ${typeClass}" data-log-id="${log.id}">
+    <span class="e3-helper-log-time">[${log.time}]</span>
+    <span class="e3-helper-log-icon">${icon}</span>
+    <span class="e3-helper-log-content-text">${argsHTML}</span>
+  </div>`;
+}
+
+// 渲染值（支援展開/收合）
+function renderValue(value, logId, path, depth = 0) {
+  const pathStr = path.join('.');
+
+  if (value === null) {
+    return `<span class="e3-helper-log-null">null</span>`;
+  }
+
+  if (value === undefined) {
+    return `<span class="e3-helper-log-undefined">undefined</span>`;
+  }
+
+  if (typeof value === 'string') {
+    return `<span class="e3-helper-log-string">"${escapeHtml(value)}"</span>`;
+  }
+
+  if (typeof value === 'number') {
+    return `<span class="e3-helper-log-number">${value}</span>`;
+  }
+
+  if (typeof value === 'boolean') {
+    return `<span class="e3-helper-log-boolean">${value}</span>`;
+  }
+
+  if (typeof value === 'function') {
+    return `<span class="e3-helper-log-function">${value.toString().substring(0, 100)}${value.toString().length > 100 ? '...' : ''}</span>`;
+  }
+
+  // 陣列
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return `<span class="e3-helper-log-array-label">[]</span>`;
+    }
+
+    const preview = value.length === 1 ? '1 item' : `${value.length} items`;
+    const id = `e3-log-${logId}-${pathStr}`;
+
+    return `<div class="e3-helper-log-expandable">
+      <span class="e3-helper-log-toggle" data-target="${id}">▶</span>
+      <span class="e3-helper-log-array-label">Array(${value.length})</span>
+      <span class="e3-helper-log-preview">[${preview}]</span>
+      <div class="e3-helper-log-expanded-content" id="${id}" style="display: none;">
+        ${value.map((item, i) => `
+          <div class="e3-helper-log-property">
+            <span class="e3-helper-log-key">${i}:</span>
+            ${renderValue(item, logId, [...path, i], depth + 1)}
+          </div>
+        `).join('')}
+      </div>
+    </div>`;
+  }
+
+  // 物件
+  if (typeof value === 'object') {
+    const keys = Object.keys(value);
+
+    if (keys.length === 0) {
+      return `<span class="e3-helper-log-object-label">{}</span>`;
+    }
+
+    const preview = keys.slice(0, 3).map(k => `${k}: ...`).join(', ');
+    const id = `e3-log-${logId}-${pathStr}`;
+
+    return `<div class="e3-helper-log-expandable">
+      <span class="e3-helper-log-toggle" data-target="${id}">▶</span>
+      <span class="e3-helper-log-object-label">{...}</span>
+      <span class="e3-helper-log-preview">{${preview}${keys.length > 3 ? '...' : ''}}</span>
+      <div class="e3-helper-log-expanded-content" id="${id}" style="display: none;">
+        ${keys.map(key => `
+          <div class="e3-helper-log-property">
+            <span class="e3-helper-log-key">${escapeHtml(key)}:</span>
+            ${renderValue(value[key], logId, [...path, key], depth + 1)}
+          </div>
+        `).join('')}
+      </div>
+    </div>`;
+  }
+
+  return `<span class="e3-helper-log-other">${String(value)}</span>`;
+}
+
+// 綁定展開/收合事件
+function attachLogEventListeners() {
+  document.querySelectorAll('.e3-helper-log-toggle').forEach(toggle => {
+    toggle.onclick = function(e) {
+      e.stopPropagation();
+      const targetId = this.getAttribute('data-target');
+      const content = document.getElementById(targetId);
+
+      if (content) {
+        const isExpanded = content.style.display !== 'none';
+        content.style.display = isExpanded ? 'none' : 'block';
+        this.textContent = isExpanded ? '▶' : '▼';
+      }
+    };
+  });
+}
+
+// 複製日誌（完整展開）
+function copyLogsToClipboard() {
+  const text = e3HelperLogs.map(log => {
+    const timestamp = log.time;
+    const args = log.args.map(arg => deepStringify(arg)).join(' ');
+    return `[${timestamp}] ${args}`;
+  }).join('\n');
+
+  navigator.clipboard.writeText(text).then(() => {
+    alert('日誌已複製到剪貼簿');
+  }).catch(err => {
+    console.error('複製失敗:', err);
+  });
+}
+
+// 深度序列化（用於複製）
+function deepStringify(obj, indent = 0, visited = new WeakSet()) {
+  if (obj === null) return 'null';
+  if (obj === undefined) return 'undefined';
+  if (typeof obj === 'string') return `"${obj}"`;
+  if (typeof obj === 'number' || typeof obj === 'boolean') return String(obj);
+  if (typeof obj === 'function') return obj.toString();
+
+  // 防止循環引用
+  if (typeof obj === 'object') {
+    if (visited.has(obj)) return '[Circular]';
+    visited.add(obj);
+  }
+
+  const spaces = '  '.repeat(indent);
+  const nextSpaces = '  '.repeat(indent + 1);
+
+  if (Array.isArray(obj)) {
+    if (obj.length === 0) return '[]';
+    const items = obj.map(item => nextSpaces + deepStringify(item, indent + 1, visited)).join(',\n');
+    return `[\n${items}\n${spaces}]`;
+  }
+
+  if (typeof obj === 'object') {
+    const keys = Object.keys(obj);
+    if (keys.length === 0) return '{}';
+    const items = keys.map(key =>
+      `${nextSpaces}${key}: ${deepStringify(obj[key], indent + 1, visited)}`
+    ).join(',\n');
+    return `{\n${items}\n${spaces}}`;
+  }
+
+  return String(obj);
+}
+
+// HTML 轉義
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
 console.log('NYCU E3 Helper 已載入');
 console.log('E3 Helper: JSZip 可用:', typeof JSZip !== 'undefined');
 
@@ -13,6 +275,8 @@ style.textContent = `
     top: 0;
     right: 0;
     width: 350px;
+    min-width: 280px;
+    max-width: 800px;
     height: 100vh;
     background: white;
     border-left: 3px solid #667eea;
@@ -21,11 +285,31 @@ style.textContent = `
     transition: transform 0.3s ease;
     overflow-y: auto;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    transform: translateX(350px);
+    transform: translateX(100%);
   }
 
   .e3-helper-sidebar.expanded {
     transform: translateX(0);
+  }
+
+  .e3-helper-resize-handle {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 6px;
+    height: 100%;
+    cursor: ew-resize;
+    background: transparent;
+    z-index: 10002;
+    transition: background 0.2s;
+  }
+
+  .e3-helper-resize-handle:hover {
+    background: rgba(102, 126, 234, 0.3);
+  }
+
+  .e3-helper-resize-handle:active {
+    background: rgba(102, 126, 234, 0.5);
   }
 
   .e3-helper-sidebar-toggle {
@@ -76,6 +360,27 @@ style.textContent = `
   .e3-helper-toggle-text {
     font-size: 14px;
     font-weight: 600;
+  }
+
+  .e3-helper-toggle-badge {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    background: #ff4444;
+    color: white;
+    border-radius: 10px;
+    padding: 2px 6px;
+    font-size: 11px;
+    font-weight: bold;
+    min-width: 18px;
+    height: 18px;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+    border: 2px solid white;
+    z-index: 10001;
+    pointer-events: none;
   }
 
   .e3-helper-sidebar-header {
@@ -240,10 +545,21 @@ style.textContent = `
     opacity: 0.7;
   }
 
+  /* 已繳交樣式 - 只改背景色，文字保持原樣 */
+  a.e3-helper-assignment-item.completed,
   .e3-helper-assignment-item.completed {
-    border-left-color: #51cf66;
-    background: #f0fdf4;
-    opacity: 0.85;
+    border-left-color: #6ee7b7 !important;
+    background: linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%) !important;
+    background-color: #f0fdf4 !important;
+    opacity: 1 !important;
+  }
+
+  a.e3-helper-assignment-item.completed:hover,
+  .e3-helper-assignment-item.completed:hover {
+    background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%) !important;
+    background-color: #ecfdf5 !important;
+    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.15) !important;
+    transform: translateX(-2px);
   }
 
   .e3-helper-assignment-name {
@@ -310,9 +626,15 @@ style.textContent = `
   }
 
   .e3-helper-status-toggle.submitted {
-    background: #d3f9d8;
-    border-color: #51cf66;
-    color: #2b8a3e;
+    background: #d1fae5;
+    border-color: #6ee7b7;
+    color: #047857;
+    font-weight: 600;
+  }
+
+  .e3-helper-status-toggle.submitted:hover {
+    background: #a7f3d0;
+    border-color: #34d399;
   }
 
   .e3-helper-no-assignments {
@@ -446,14 +768,57 @@ style.textContent = `
     background: #f8f9fa;
     border-radius: 6px;
     display: flex;
-    align-items: center;
-    gap: 10px;
+    flex-direction: column;
+    gap: 8px;
     transition: all 0.2s ease;
   }
 
   .e3-helper-pdf-item:hover {
     background: #e9ecef;
-    transform: translateX(-2px);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  }
+
+  .e3-helper-file-actions {
+    display: flex;
+    gap: 6px;
+    margin-left: 38px;
+  }
+
+  .e3-helper-file-btn {
+    flex: 1;
+    padding: 6px 10px;
+    font-size: 11px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    font-weight: 500;
+  }
+
+  .e3-helper-view-page {
+    background: #667eea;
+    color: white;
+  }
+
+  .e3-helper-view-page:hover {
+    background: #5568d3;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(102, 126, 234, 0.4);
+  }
+
+  .e3-helper-download-file {
+    background: #28a745;
+    color: white;
+  }
+
+  .e3-helper-download-file:hover {
+    background: #218838;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(40, 167, 69, 0.4);
+  }
+
+  .e3-helper-file-btn:active {
+    transform: translateY(0);
   }
 
   .e3-helper-pdf-checkbox {
@@ -461,6 +826,8 @@ style.textContent = `
     height: 18px;
     cursor: pointer;
     flex-shrink: 0;
+    z-index: 1;
+    position: relative;
   }
 
   .e3-helper-pdf-icon {
@@ -492,6 +859,62 @@ style.textContent = `
     border-top: 1px solid #e9ecef;
     font-size: 12px;
     color: #6c757d;
+  }
+
+  .e3-helper-progress-container {
+    padding: 12px;
+    background: #fff;
+    border-top: 1px solid #e9ecef;
+  }
+
+  .e3-helper-progress-bar {
+    width: 100%;
+    height: 20px;
+    background: #e9ecef;
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 8px;
+    position: relative;
+  }
+
+  .e3-helper-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+    border-radius: 10px;
+    transition: width 0.3s ease;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .e3-helper-progress-fill::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    right: 0;
+    background: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0) 0%,
+      rgba(255, 255, 255, 0.3) 50%,
+      rgba(255, 255, 255, 0) 100%
+    );
+    animation: shimmer 2s infinite;
+  }
+
+  @keyframes shimmer {
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(100%);
+    }
+  }
+
+  .e3-helper-progress-text {
+    font-size: 12px;
+    color: #6c757d;
+    text-align: center;
   }
 
   .e3-helper-course-item {
@@ -531,6 +954,7 @@ style.textContent = `
     border-radius: 8px;
     border-left: 4px solid #667eea;
     transition: all 0.2s ease;
+    position: relative;
   }
 
   .e3-helper-announcement-item:hover {
@@ -556,6 +980,20 @@ style.textContent = `
     transition: color 0.2s ease;
   }
 
+  .e3-helper-unread-dot {
+    position: absolute;
+    left: -2px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 8px;
+    height: 8px;
+    background: #e74c3c;
+    border-radius: 50%;
+    border: 2px solid white;
+    box-shadow: 0 0 4px rgba(231, 76, 60, 0.5);
+    z-index: 1;
+  }
+
   .e3-helper-announcement-title:hover {
     color: #667eea;
   }
@@ -569,6 +1007,348 @@ style.textContent = `
     font-size: 12px;
     color: #6c757d;
   }
+
+  /* 日誌 Modal 樣式 */
+  .e3-helper-log-modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 100000;
+    justify-content: center;
+    align-items: center;
+  }
+
+  .e3-helper-log-modal.show {
+    display: flex;
+  }
+
+  .e3-helper-log-modal-content {
+    background: white;
+    border-radius: 12px;
+    width: 90%;
+    max-width: 900px;
+    height: 80vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+  }
+
+  .e3-helper-log-modal-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid #e9ecef;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border-radius: 12px 12px 0 0;
+  }
+
+  .e3-helper-log-modal-header h2 {
+    margin: 0;
+    font-size: 18px;
+  }
+
+  .e3-helper-log-modal-close {
+    background: none;
+    border: none;
+    color: white;
+    font-size: 28px;
+    cursor: pointer;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    transition: opacity 0.2s;
+  }
+
+  .e3-helper-log-modal-close:hover {
+    opacity: 0.7;
+  }
+
+  .e3-helper-log-modal-body {
+    flex: 1;
+    overflow: hidden;
+    padding: 16px;
+  }
+
+  .e3-helper-log-container {
+    height: 100%;
+    overflow-y: auto;
+    background: #f8f9fa;
+    border-radius: 8px;
+    padding: 12px;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 13px;
+  }
+
+  .e3-helper-log-content {
+    min-height: 100%;
+  }
+
+  .e3-helper-log-placeholder {
+    color: #999;
+    text-align: center;
+    padding: 40px 20px;
+    font-size: 14px;
+  }
+
+  .e3-helper-log-entry {
+    padding: 6px 8px;
+    margin-bottom: 2px;
+    border-radius: 4px;
+    line-height: 1.5;
+    word-wrap: break-word;
+  }
+
+  .e3-helper-log-entry:hover {
+    background: rgba(0, 0, 0, 0.03);
+  }
+
+  .e3-helper-log-time {
+    color: #999;
+    margin-right: 8px;
+    font-size: 11px;
+  }
+
+  .e3-helper-log-icon {
+    margin-right: 6px;
+  }
+
+  .e3-helper-log-content-text {
+    display: inline;
+  }
+
+  /* 不同類型日誌的顏色 */
+  .e3-helper-log-log .e3-helper-log-icon { opacity: 0.8; }
+  .e3-helper-log-info { color: #0066cc; }
+  .e3-helper-log-warn { color: #ff8800; background: #fff3cd; }
+  .e3-helper-log-error { color: #cc0000; background: #f8d7da; }
+  .e3-helper-log-debug { color: #6c757d; }
+
+  /* 值的樣式 */
+  .e3-helper-log-null { color: #808080; }
+  .e3-helper-log-undefined { color: #808080; }
+  .e3-helper-log-string { color: #c41a16; }
+  .e3-helper-log-number { color: #1c00cf; }
+  .e3-helper-log-boolean { color: #1c00cf; }
+  .e3-helper-log-function { color: #666; font-style: italic; }
+  .e3-helper-log-array-label, .e3-helper-log-object-label { color: #666; font-weight: 500; }
+  .e3-helper-log-preview { color: #999; margin-left: 4px; }
+  .e3-helper-log-key { color: #881391; margin-right: 4px; }
+  .e3-helper-log-other { color: #000; }
+
+  .e3-helper-log-expandable {
+    display: inline-block;
+    vertical-align: top;
+  }
+
+  .e3-helper-log-toggle {
+    cursor: pointer;
+    user-select: none;
+    color: #666;
+    margin-right: 4px;
+    display: inline-block;
+    width: 12px;
+    font-size: 10px;
+  }
+
+  .e3-helper-log-toggle:hover {
+    color: #000;
+  }
+
+  .e3-helper-log-expanded-content {
+    margin-left: 16px;
+    border-left: 1px solid #e0e0e0;
+    padding-left: 8px;
+    margin-top: 4px;
+  }
+
+  .e3-helper-log-property {
+    margin: 2px 0;
+  }
+
+  .e3-helper-log-modal-footer {
+    padding: 12px 20px;
+    border-top: 1px solid #e9ecef;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+
+  .e3-helper-log-btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.2s;
+  }
+
+  .e3-helper-log-btn-secondary {
+    background: #6c757d;
+    color: white;
+  }
+
+  .e3-helper-log-btn-secondary:hover {
+    background: #5a6268;
+  }
+
+  .e3-helper-log-btn-primary {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+  }
+
+  .e3-helper-log-btn-primary:hover {
+    opacity: 0.9;
+  }
+
+  /* 設定 Modal 樣式 */
+  .e3-helper-settings-container {
+    height: 100%;
+    overflow-y: auto;
+  }
+
+  .e3-helper-settings-section {
+    margin-bottom: 24px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid #e9ecef;
+  }
+
+  .e3-helper-settings-section:last-child {
+    border-bottom: none;
+  }
+
+  .e3-helper-settings-title {
+    font-size: 16px;
+    font-weight: 600;
+    margin: 0 0 12px 0;
+    color: #333;
+  }
+
+  .e3-helper-settings-description {
+    font-size: 13px;
+    color: #666;
+    line-height: 1.6;
+    margin-bottom: 16px;
+  }
+
+  .e3-helper-setting-item {
+    margin-bottom: 16px;
+  }
+
+  .e3-helper-setting-label {
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    font-size: 14px;
+    color: #333;
+  }
+
+  .e3-helper-setting-label input[type="checkbox"] {
+    margin-right: 8px;
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+  }
+
+  .e3-helper-setting-label-block {
+    display: block;
+    font-size: 14px;
+    color: #333;
+    font-weight: 500;
+  }
+
+  .e3-helper-setting-label-block span {
+    display: block;
+    margin-bottom: 6px;
+  }
+
+  .e3-helper-setting-input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 14px;
+    transition: border-color 0.2s;
+    box-sizing: border-box;
+  }
+
+  .e3-helper-setting-input:focus {
+    outline: none;
+    border-color: #667eea;
+  }
+
+  .e3-helper-setting-tip {
+    background: #f0f4ff;
+    border-left: 3px solid #667eea;
+    padding: 12px 16px;
+    border-radius: 4px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: #333;
+    margin-top: 16px;
+  }
+
+  .e3-helper-setting-tip strong {
+    display: block;
+    margin-bottom: 8px;
+    color: #667eea;
+  }
+
+  .e3-helper-setting-tip a {
+    color: #667eea;
+    text-decoration: none;
+    font-weight: 500;
+  }
+
+  .e3-helper-setting-tip a:hover {
+    text-decoration: underline;
+  }
+
+  .e3-helper-ai-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+  }
+
+  .e3-helper-status-icon {
+    font-size: 16px;
+  }
+
+  .e3-helper-status-text {
+    font-weight: 500;
+  }
+
+  .e3-helper-test-btn {
+    padding: 8px 16px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: opacity 0.2s;
+  }
+
+  .e3-helper-test-btn:hover {
+    opacity: 0.9;
+  }
+
+  .e3-helper-test-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
 `;
 document.head.appendChild(style);
 
@@ -581,7 +1361,7 @@ let allCourses = [];
 let selectedCourseId = null;
 let gradeData = {};
 
-// 儲存教材檔案資訊
+// 儲存檔案資訊（教材、影片、公告）
 let allPDFs = [];
 let selectedPDFs = new Set();
 let selectedCourses = new Set(); // 選中要掃描的課程 ID
@@ -594,22 +1374,77 @@ let readMessages = new Set(); // 已讀信件 ID
 
 // 支援的檔案類型
 const SUPPORTED_FILE_TYPES = [
+  // 文件
   { ext: '.pdf', icon: '📄', name: 'PDF' },
+  { ext: '.txt', icon: '📄', name: 'TXT' },
+  { ext: '.md', icon: '📄', name: 'Markdown' },
+
+  // 簡報
   { ext: '.ppt', icon: '📊', name: 'PPT' },
   { ext: '.pptx', icon: '📊', name: 'PPTX' },
+  { ext: '.odp', icon: '📊', name: 'ODP' },
+
+  // 文書
   { ext: '.doc', icon: '📝', name: 'DOC' },
   { ext: '.docx', icon: '📝', name: 'DOCX' },
+  { ext: '.odt', icon: '📝', name: 'ODT' },
+  { ext: '.rtf', icon: '📝', name: 'RTF' },
+
+  // 試算表
   { ext: '.xls', icon: '📈', name: 'XLS' },
   { ext: '.xlsx', icon: '📈', name: 'XLSX' },
+  { ext: '.ods', icon: '📈', name: 'ODS' },
+  { ext: '.csv', icon: '📈', name: 'CSV' },
+
+  // 壓縮檔
   { ext: '.zip', icon: '📦', name: 'ZIP' },
   { ext: '.rar', icon: '📦', name: 'RAR' },
+  { ext: '.7z', icon: '📦', name: '7Z' },
+  { ext: '.tar', icon: '📦', name: 'TAR' },
+  { ext: '.gz', icon: '📦', name: 'GZ' },
+
+  // 影片
   { ext: '.mp4', icon: '🎬', name: 'MP4' },
   { ext: '.avi', icon: '🎬', name: 'AVI' },
   { ext: '.mov', icon: '🎬', name: 'MOV' },
   { ext: '.wmv', icon: '🎬', name: 'WMV' },
   { ext: '.flv', icon: '🎬', name: 'FLV' },
   { ext: '.mkv', icon: '🎬', name: 'MKV' },
-  { ext: '.webm', icon: '🎬', name: 'WEBM' }
+  { ext: '.webm', icon: '🎬', name: 'WEBM' },
+  { ext: '.m4v', icon: '🎬', name: 'M4V' },
+
+  // 音訊
+  { ext: '.mp3', icon: '🎵', name: 'MP3' },
+  { ext: '.wav', icon: '🎵', name: 'WAV' },
+  { ext: '.flac', icon: '🎵', name: 'FLAC' },
+  { ext: '.aac', icon: '🎵', name: 'AAC' },
+  { ext: '.m4a', icon: '🎵', name: 'M4A' },
+  { ext: '.ogg', icon: '🎵', name: 'OGG' },
+
+  // 圖片
+  { ext: '.jpg', icon: '🖼️', name: 'JPG' },
+  { ext: '.jpeg', icon: '🖼️', name: 'JPEG' },
+  { ext: '.png', icon: '🖼️', name: 'PNG' },
+  { ext: '.gif', icon: '🖼️', name: 'GIF' },
+  { ext: '.bmp', icon: '🖼️', name: 'BMP' },
+  { ext: '.svg', icon: '🖼️', name: 'SVG' },
+  { ext: '.webp', icon: '🖼️', name: 'WEBP' },
+
+  // 程式碼
+  { ext: '.c', icon: '💻', name: 'C' },
+  { ext: '.cpp', icon: '💻', name: 'C++' },
+  { ext: '.java', icon: '💻', name: 'Java' },
+  { ext: '.py', icon: '💻', name: 'Python' },
+  { ext: '.js', icon: '💻', name: 'JavaScript' },
+  { ext: '.html', icon: '💻', name: 'HTML' },
+  { ext: '.css', icon: '💻', name: 'CSS' },
+  { ext: '.json', icon: '💻', name: 'JSON' },
+  { ext: '.xml', icon: '💻', name: 'XML' },
+
+  // 其他
+  { ext: '.exe', icon: '⚙️', name: 'EXE' },
+  { ext: '.apk', icon: '📱', name: 'APK' },
+  { ext: '.iso', icon: '💿', name: 'ISO' }
 ];
 
 // 取得檔案類型資訊
@@ -621,6 +1456,36 @@ function getFileTypeInfo(url) {
     }
   }
   return { ext: '', icon: '📎', name: 'FILE' };
+}
+
+// 標準化 URL（用於去重比較）
+function normalizeUrl(url) {
+  if (!url) return '';
+  try {
+    const urlObj = new URL(url);
+    // 移除 fragment (#)
+    urlObj.hash = '';
+
+    // 移除不影響檔案身份的參數（forcedownload、時間戳等）
+    const ignoredParams = ['forcedownload', 'time', 'token', '_'];
+    urlObj.searchParams.forEach((value, key) => {
+      if (ignoredParams.includes(key.toLowerCase())) {
+        urlObj.searchParams.delete(key);
+      }
+    });
+
+    // 排序剩餘的查詢參數
+    const params = Array.from(urlObj.searchParams.entries()).sort();
+    urlObj.search = '';
+    params.forEach(([key, value]) => {
+      urlObj.searchParams.append(key, value);
+    });
+
+    return urlObj.toString();
+  } catch (e) {
+    // 如果不是有效 URL，返回原始字串
+    return url.trim();
+  }
 }
 
 // 從儲存空間讀取作業狀態
@@ -674,6 +1539,11 @@ async function toggleAssignmentStatus(eventId) {
   assignment.manualStatus = newStatus;
   await saveAssignmentStatus(eventId, newStatus);
   await saveAssignments(); // 同時更新作業列表
+
+  // 重新檢查緊急通知
+  const now = new Date().getTime();
+  await checkUrgentAssignments(allAssignments, now);
+
   updateSidebarContent();
   console.log(`E3 Helper: 作業 ${eventId} 狀態切換為 ${newStatus}`);
 }
@@ -735,6 +1605,9 @@ function createSidebar() {
     syncStatus.innerHTML = `
       <div class="e3-helper-sync-time" id="e3-helper-sync-time">載入中...</div>
       <div style="display: flex; gap: 4px;">
+        <button class="e3-helper-sync-btn" id="e3-helper-settings-btn" title="設定">⚙️</button>
+        <button class="e3-helper-sync-btn" id="e3-helper-log-btn" title="查看日誌">📋</button>
+        <button class="e3-helper-sync-btn" id="e3-helper-report-btn" title="問題回報">🐛</button>
         <button class="e3-helper-sync-btn" id="e3-helper-sync-btn">🔄 同步</button>
         <button class="e3-helper-sync-btn" id="e3-helper-close-btn">✕</button>
       </div>
@@ -757,15 +1630,15 @@ function createSidebar() {
 
     const gradeTab = document.createElement('button');
     gradeTab.className = 'e3-helper-tab';
-    gradeTab.innerHTML = '<span style="font-size: 16px;">📊</span><br><span style="font-size: 10px; line-height: 1.3;">成績<br>分析</span>';
+    gradeTab.innerHTML = '<span style="font-size: 16px;">🎓</span><br><span style="font-size: 10px; line-height: 1.3;">課程<br>列表</span>';
     gradeTab.dataset.tab = 'grades';
-    gradeTab.title = '成績分析';
+    gradeTab.title = '課程列表（成員統計、成績分析）';
 
     const downloadTab = document.createElement('button');
     downloadTab.className = 'e3-helper-tab';
-    downloadTab.innerHTML = '<span style="font-size: 16px;">📥</span><br><span style="font-size: 10px; line-height: 1.3;">教材<br>下載</span>';
+    downloadTab.innerHTML = '<span style="font-size: 16px;">📥</span><br><span style="font-size: 10px; line-height: 1.3;">檔案<br>下載</span>';
     downloadTab.dataset.tab = 'downloads';
-    downloadTab.title = '教材下載';
+    downloadTab.title = '檔案下載（教材、影片、公告）';
 
     // 公告與信件 tab
     const announcementTab = document.createElement('button');
@@ -774,6 +1647,20 @@ function createSidebar() {
     announcementTab.dataset.tab = 'announcements';
     announcementTab.title = '公告與信件';
 
+    // 通知中心 tab
+    const notificationTab = document.createElement('button');
+    notificationTab.className = 'e3-helper-tab';
+    notificationTab.innerHTML = '<span style="font-size: 16px; position: relative;">🔔<span id="e3-helper-notification-badge" style="display: none; position: absolute; top: -5px; right: -8px; background: #dc3545; color: white; border-radius: 10px; padding: 2px 5px; font-size: 9px; font-weight: bold; min-width: 16px; text-align: center;"></span></span><br><span style="font-size: 10px; line-height: 1.3;">通知<br>中心</span>';
+    notificationTab.dataset.tab = 'notifications';
+    notificationTab.title = '通知中心';
+
+    // 使用說明 tab
+    const helpTab = document.createElement('button');
+    helpTab.className = 'e3-helper-tab';
+    helpTab.innerHTML = '<span style="font-size: 16px;">📖</span><br><span style="font-size: 10px; line-height: 1.3;">使用<br>說明</span>';
+    helpTab.dataset.tab = 'help';
+    helpTab.title = '使用說明';
+
     // 只添加作業倒數和公告 tab，在 E3 網站才添加成績和下載 tab
     tabs.appendChild(assignmentTab);
     if (onE3Site) {
@@ -781,6 +1668,8 @@ function createSidebar() {
       tabs.appendChild(downloadTab);
     }
     tabs.appendChild(announcementTab);
+    tabs.appendChild(notificationTab);
+    tabs.appendChild(helpTab);
     header.appendChild(tabs);
     sidebar.appendChild(header);
 
@@ -789,26 +1678,82 @@ function createSidebar() {
     assignmentContent.className = 'e3-helper-content active';
     assignmentContent.dataset.content = 'assignments';
 
+    // 添加時區信息欄
+    const timezoneInfo = document.createElement('div');
+    timezoneInfo.style.cssText = 'padding: 8px 12px; background: #e3f2fd; border-bottom: 1px solid #bbdefb; font-size: 11px; color: #1976d2; display: flex; align-items: center; justify-content: space-between;';
+    const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const timezoneOffset = -(new Date().getTimezoneOffset() / 60);
+    const offsetStr = timezoneOffset >= 0 ? `+${timezoneOffset}` : timezoneOffset;
+    timezoneInfo.innerHTML = `
+      <span>🌍 時區: ${userTimezone} (UTC${offsetStr})</span>
+      <span style="font-size: 10px; opacity: 0.8;">所有時間已自動轉換為本地時間</span>
+    `;
+    assignmentContent.appendChild(timezoneInfo);
+
     const listContainer = document.createElement('div');
     listContainer.className = 'e3-helper-assignment-list';
     assignmentContent.appendChild(listContainer);
     sidebar.appendChild(assignmentContent);
 
-    // 只在 E3 網站創建成績分析和教材下載容器
+    // 只在 E3 網站創建成績分析和檔案下載容器
     let gradeContent, downloadContent;
     if (onE3Site) {
-      // 創建成績分析容器
+      // 創建課程列表容器
       gradeContent = document.createElement('div');
       gradeContent.className = 'e3-helper-content';
       gradeContent.dataset.content = 'grades';
 
-      const gradeStats = document.createElement('div');
-      gradeStats.className = 'e3-helper-grade-stats';
-      gradeStats.innerHTML = '<div class="e3-helper-loading">載入課程成績中...</div>';
-      gradeContent.appendChild(gradeStats);
+      // 課程列表區域
+      const courseListArea = document.createElement('div');
+      courseListArea.className = 'e3-helper-course-list-area';
+      courseListArea.innerHTML = `
+        <div style="padding: 12px; border-bottom: 1px solid #e9ecef; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <span style="font-size: 14px; font-weight: 600;">📚 我的課程</span>
+            <button id="e3-helper-refresh-courses" style="background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3); color: white; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 11px;">🔄 重新載入</button>
+          </div>
+          <button id="e3-helper-check-participants-btn" style="width: 100%; background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3); color: white; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-bottom: 6px;">👥 檢查成員變動</button>
+          <div id="e3-helper-last-check-time" style="font-size: 10px; opacity: 0.8; text-align: center;">尚未檢測</div>
+        </div>
+        <div id="e3-helper-course-list-container" style="overflow-y: auto; max-height: calc(100vh - 200px);">
+          <div class="e3-helper-loading">載入課程中...</div>
+        </div>
+      `;
+      gradeContent.appendChild(courseListArea);
+
+      // 課程詳細資訊區域（初始隱藏）
+      const courseDetailArea = document.createElement('div');
+      courseDetailArea.className = 'e3-helper-course-detail-area';
+      courseDetailArea.style.display = 'none';
+      courseDetailArea.innerHTML = `
+        <div style="padding: 12px; border-bottom: 1px solid #e9ecef; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+          <button id="e3-helper-back-to-list" style="background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3); color: white; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-size: 11px; margin-bottom: 8px;">← 返回列表</button>
+          <div id="e3-helper-course-title" style="font-size: 14px; font-weight: 600; margin-bottom: 4px;"></div>
+          <div id="e3-helper-course-teacher" style="font-size: 11px; opacity: 0.9;"></div>
+        </div>
+
+        <!-- 功能選擇 tabs -->
+        <div style="display: flex; border-bottom: 1px solid #e9ecef; background: #f8f9fa;">
+          <button class="e3-helper-course-function-tab active" data-function="stats" style="flex: 1; padding: 10px; border: none; background: transparent; cursor: pointer; font-size: 12px; border-bottom: 2px solid #667eea;">📊 統計</button>
+          <button class="e3-helper-course-function-tab" data-function="grades" style="flex: 1; padding: 10px; border: none; background: transparent; cursor: pointer; font-size: 12px; border-bottom: 2px solid transparent;">📈 成績</button>
+        </div>
+
+        <!-- 統計內容 -->
+        <div id="e3-helper-course-stats-content" class="e3-helper-course-function-content">
+          <div class="e3-helper-loading">載入統計資料中...</div>
+        </div>
+
+        <!-- 成績內容 -->
+        <div id="e3-helper-course-grades-content" class="e3-helper-course-function-content" style="display: none;">
+          <div class="e3-helper-grade-stats">
+            <div class="e3-helper-loading">載入成績中...</div>
+          </div>
+        </div>
+      `;
+      gradeContent.appendChild(courseDetailArea);
       sidebar.appendChild(gradeContent);
 
-      // 創建教材下載容器
+      // 創建檔案下載容器
       downloadContent = document.createElement('div');
       downloadContent.className = 'e3-helper-content';
       downloadContent.dataset.content = 'downloads';
@@ -830,6 +1775,7 @@ function createSidebar() {
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
             <span style="font-size: 13px; font-weight: 600; color: #495057;">選擇要掃描的課程</span>
             <div style="display: flex; gap: 4px;">
+              <button class="e3-helper-download-btn secondary" id="e3-helper-load-past-courses" style="padding: 4px 8px; font-size: 11px;" title="載入歷年課程">📚 歷年</button>
               <button class="e3-helper-download-btn secondary" id="e3-helper-select-all-courses" style="padding: 4px 8px; font-size: 11px;">全選</button>
               <button class="e3-helper-download-btn secondary" id="e3-helper-deselect-all-courses" style="padding: 4px 8px; font-size: 11px;">取消</button>
             </div>
@@ -847,7 +1793,8 @@ function createSidebar() {
       downloadActions.innerHTML = `
         <button class="e3-helper-download-btn secondary" id="e3-helper-select-all">全選</button>
         <button class="e3-helper-download-btn secondary" id="e3-helper-deselect-all">取消全選</button>
-        <button class="e3-helper-download-btn" id="e3-helper-download-selected">下載選取</button>
+        <button class="e3-helper-download-btn" id="e3-helper-download-separate" title="逐個下載選取的檔案">分開下載</button>
+        <button class="e3-helper-download-btn" id="e3-helper-download-zip" title="將選取的檔案打包成 ZIP 下載">打包下載</button>
       `;
       downloadContent.appendChild(downloadActions);
 
@@ -860,6 +1807,19 @@ function createSidebar() {
       downloadStatus.className = 'e3-helper-download-status';
       downloadStatus.textContent = '已選取 0 個檔案';
       downloadContent.appendChild(downloadStatus);
+
+      // 添加進度條容器
+      const progressContainer = document.createElement('div');
+      progressContainer.className = 'e3-helper-progress-container';
+      progressContainer.style.display = 'none'; // 預設隱藏
+      progressContainer.innerHTML = `
+        <div class="e3-helper-progress-bar">
+          <div class="e3-helper-progress-fill" style="width: 0%"></div>
+        </div>
+        <div class="e3-helper-progress-text">準備中...</div>
+      `;
+      downloadContent.appendChild(progressContainer);
+
       sidebar.appendChild(downloadContent);
     } // 結束 if (onE3Site)
 
@@ -874,19 +1834,196 @@ function createSidebar() {
     announcementContent.appendChild(announcementList);
     sidebar.appendChild(announcementContent);
 
-    // 標籤切換事件（只在 E3 網站上）
-    if (onE3Site) {
-      assignmentTab.addEventListener('click', () => {
-        assignmentTab.classList.add('active');
+    // 創建通知中心容器
+    const notificationContent = document.createElement('div');
+    notificationContent.className = 'e3-helper-content';
+    notificationContent.dataset.content = 'notifications';
+
+    const notificationList = document.createElement('div');
+    notificationList.id = 'e3-helper-notification-list';
+    notificationList.className = 'e3-helper-assignment-list';
+    notificationList.innerHTML = '<div class="e3-helper-loading">載入通知中...</div>';
+    notificationContent.appendChild(notificationList);
+    sidebar.appendChild(notificationContent);
+
+    // 使用說明內容
+    const helpContent = document.createElement('div');
+    helpContent.className = 'e3-helper-content';
+    helpContent.dataset.content = 'help';
+    helpContent.innerHTML = `
+      <div style="padding: 20px; overflow-y: auto; height: 100%; background: #f8f9fa; font-size: 13px; line-height: 1.6;">
+        <h2 style="margin: 0 0 16px; font-size: 18px; color: #333; border-bottom: 2px solid #7c4dff; padding-bottom: 8px;">📖 使用說明</h2>
+
+        <section style="background: white; padding: 16px; margin-bottom: 16px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+          <h3 style="margin: 0 0 12px; font-size: 15px; color: #7c4dff;">🎯 主要功能</h3>
+          <ul style="margin: 0; padding-left: 20px;">
+            <li style="margin-bottom: 8px;"><strong>作業倒數</strong>：即時顯示作業截止時間，手動標記已繳交</li>
+            <li style="margin-bottom: 8px;"><strong>公告信件</strong>：整合所有課程的公告與 dcpcmail 信件，支援 AI 翻譯與摘要</li>
+            <li style="margin-bottom: 8px;"><strong>智能通知</strong>：浮動按鈕顯示未讀徽章，24 小時內到期作業自動提醒</li>
+            <li style="margin-bottom: 8px;"><strong>成績查詢</strong>：快速查看課程成績與評分細節（E3 網站）</li>
+            <li style="margin-bottom: 8px;"><strong>檔案下載</strong>：批次下載課程教材、影片（E3 網站）</li>
+            <li style="margin-bottom: 8px;"><strong>跨網頁使用</strong>：在任何網站都能開啟側邊欄查看資訊</li>
+          </ul>
+        </section>
+
+        <section style="background: white; padding: 16px; margin-bottom: 16px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+          <h3 style="margin: 0 0 12px; font-size: 15px; color: #7c4dff;">🚀 首次使用</h3>
+          <ol style="margin: 0; padding-left: 20px;">
+            <li style="margin-bottom: 8px;">登入 <a href="https://e3p.nycu.edu.tw/" target="_blank" style="color: #7c4dff; text-decoration: underline;">E3 平台</a></li>
+            <li style="margin-bottom: 8px;">點擊側邊欄中的「🔄 同步」按鈕</li>
+            <li style="margin-bottom: 8px;">等待同步完成（約 10-30 秒）</li>
+            <li style="margin-bottom: 8px;">開始使用各項功能！</li>
+          </ol>
+        </section>
+
+        <section style="background: white; padding: 16px; margin-bottom: 16px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+          <h3 style="margin: 0 0 12px; font-size: 15px; color: #7c4dff;">📝 作業倒數</h3>
+          <p style="margin: 0 0 8px;"><strong>視覺化提示：</strong></p>
+          <ul style="margin: 0 0 12px; padding-left: 20px;">
+            <li style="margin-bottom: 6px;">🔴 紅色：已逾期</li>
+            <li style="margin-bottom: 6px;">🟡 黃色：3天內到期</li>
+            <li style="margin-bottom: 6px;">🟢 綠色：充裕時間</li>
+          </ul>
+          <p style="margin: 0 0 8px;"><strong>操作方式：</strong></p>
+          <ul style="margin: 0; padding-left: 20px;">
+            <li style="margin-bottom: 6px;">點擊「前往」進入作業頁面</li>
+            <li style="margin-bottom: 6px;">完成後點擊「已繳交」標記</li>
+            <li style="margin-bottom: 6px;">已繳交的作業不會被自動刪除</li>
+          </ul>
+        </section>
+
+        <section style="background: white; padding: 16px; margin-bottom: 16px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+          <h3 style="margin: 0 0 12px; font-size: 15px; color: #7c4dff;">📢 公告與信件</h3>
+          <p style="margin: 0 0 8px;"><strong>載入資料：</strong></p>
+          <ul style="margin: 0 0 12px; padding-left: 20px;">
+            <li style="margin-bottom: 6px;">點擊「🔄 載入公告與信件」按鈕</li>
+            <li style="margin-bottom: 6px;">在非 E3 網站也能載入（自動連接到 E3）</li>
+            <li style="margin-bottom: 6px;">資料載入後會儲存在本地</li>
+          </ul>
+          <p style="margin: 0 0 8px;"><strong>查看與管理：</strong></p>
+          <ul style="margin: 0 0 12px; padding-left: 20px;">
+            <li style="margin-bottom: 6px;">🔴 <strong>未讀項目</strong>會在左側顯示紅點標記</li>
+            <li style="margin-bottom: 6px;">按類型篩選：全部 / 公告 / 信件</li>
+            <li style="margin-bottom: 6px;">按狀態篩選：全部 / 未讀 / 已讀</li>
+            <li style="margin-bottom: 6px;">點擊「✓ 全部已讀」一鍵標記所有為已讀</li>
+            <li style="margin-bottom: 6px;">點擊「👁️ 查看內容」查看詳細資訊</li>
+          </ul>
+          <p style="margin: 0 0 8px;"><strong>🤖 AI 翻譯與摘要（選配）：</strong></p>
+          <ul style="margin: 0; padding-left: 20px;">
+            <li style="margin-bottom: 6px;">點擊齒輪 ⚙️ 設定 Gemini API（<a href="https://ai.google.dev/" target="_blank" style="color: #7c4dff;">免費申請</a>）</li>
+            <li style="margin-bottom: 6px;"><strong>🌐 中→英</strong> / <strong>🌐 英→中</strong>：翻譯為繁體中文，保留完整格式</li>
+            <li style="margin-bottom: 6px;"><strong>🤖 AI摘要</strong>：快速生成內容摘要（需 Gemini API）</li>
+            <li style="margin-bottom: 6px;">未設定 API 時使用 Google Translate 免費服務</li>
+          </ul>
+        </section>
+
+        <section style="background: white; padding: 16px; margin-bottom: 16px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+          <h3 style="margin: 0 0 12px; font-size: 15px; color: #7c4dff;">🎓 成績查詢（E3 網站）</h3>
+          <ul style="margin: 0; padding-left: 20px;">
+            <li style="margin-bottom: 8px;">選擇要查詢的課程</li>
+            <li style="margin-bottom: 8px;">點擊「查詢成績」</li>
+            <li style="margin-bottom: 8px;">查看作業、考試、總成績與評分細節</li>
+          </ul>
+        </section>
+
+        <section style="background: white; padding: 16px; margin-bottom: 16px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+          <h3 style="margin: 0 0 12px; font-size: 15px; color: #7c4dff;">📥 檔案下載（E3 網站）</h3>
+          <p style="margin: 0 0 8px;"><strong>兩種模式：</strong></p>
+          <ul style="margin: 0; padding-left: 20px;">
+            <li style="margin-bottom: 8px;"><strong>掃描此頁</strong>：快速掃描當前課程頁面的所有檔案</li>
+            <li style="margin-bottom: 8px;"><strong>選擇課程</strong>：選擇要掃描的課程進行完整掃描</li>
+          </ul>
+          <p style="margin: 8px 0;"><strong>支援格式：</strong>PDF、PPT、Word、Excel、影片、ZIP 等</p>
+        </section>
+
+        <section style="background: white; padding: 16px; margin-bottom: 16px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+          <h3 style="margin: 0 0 12px; font-size: 15px; color: #7c4dff;">🔄 自動同步</h3>
+          <ul style="margin: 0; padding-left: 20px;">
+            <li style="margin-bottom: 8px;">每小時自動同步作業與課程資料</li>
+            <li style="margin-bottom: 8px;">手動點擊「🔄 同步」立即更新</li>
+            <li style="margin-bottom: 8px;">側邊欄底部顯示最後同步時間</li>
+          </ul>
+        </section>
+
+        <section style="background: white; padding: 16px; margin-bottom: 16px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+          <h3 style="margin: 0 0 12px; font-size: 15px; color: #7c4dff;">🔔 通知徽章</h3>
+          <ul style="margin: 0; padding-left: 20px;">
+            <li style="margin-bottom: 8px;"><strong>浮動按鈕徽章</strong>：右側「📚 E3小助手」按鈕右上角顯示紅色徽章</li>
+            <li style="margin-bottom: 8px;"><strong>擴充功能圖示</strong>：瀏覽器工具列圖示顯示未讀總數</li>
+            <li style="margin-bottom: 8px;"><strong>包含內容</strong>：未讀公告、未讀信件、24小時內到期作業</li>
+            <li style="margin-bottom: 8px;">點擊徽章可直接查看通知詳情</li>
+          </ul>
+        </section>
+
+        <section style="background: white; padding: 16px; margin-bottom: 16px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+          <h3 style="margin: 0 0 12px; font-size: 15px; color: #e74c3c;">🐛 問題回報 / 功能建議</h3>
+          <p style="margin: 0 0 12px; color: #666; font-size: 13px; line-height: 1.6;">
+            遇到問題或有功能建議？歡迎透過以下方式回報：
+          </p>
+          <ul style="margin: 0 0 12px; padding-left: 20px; color: #666; font-size: 13px;">
+            <li style="margin-bottom: 6px;">點擊側邊欄標題區的 <strong>🐛 按鈕</strong></li>
+            <li style="margin-bottom: 6px;">或點擊下方「<a href="https://forms.gle/SbPcqgVRuNSdVyqK9" target="_blank" style="color: #e74c3c; font-weight: 600;">問題回報 / 功能建議</a>」連結</li>
+          </ul>
+          <div style="background: #fff3e0; padding: 12px; border-radius: 6px; border-left: 4px solid #ff9800;">
+            <p style="margin: 0; color: #e65100; font-size: 12px; line-height: 1.5;">
+              <strong>💡 提示：</strong>回報問題時，請詳細描述遇到的情況、操作步驟，並提供 Console 日誌（按 F12 查看）或截圖，這將幫助我們更快解決問題！
+            </p>
+          </div>
+        </section>
+
+        <section style="background: white; padding: 16px; margin-bottom: 16px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+          <h3 style="margin: 0 0 12px; font-size: 15px; color: #7c4dff;">❓ 常見問題</h3>
+          <div style="margin-bottom: 12px;">
+            <p style="margin: 0 0 4px; font-weight: bold;">Q: 同步失敗怎麼辦？</p>
+            <p style="margin: 0; color: #666; font-size: 12px;">A: 確認已登入 E3，重新登入後再次同步。按 F12 查看 Console 了解詳細錯誤。</p>
+          </div>
+          <div style="margin-bottom: 12px;">
+            <p style="margin: 0 0 4px; font-weight: bold;">Q: 非 E3 網站能用嗎？</p>
+            <p style="margin: 0; color: #666; font-size: 12px;">A: 可以！作業倒數、公告信件、通知中心都能在任何網站使用。成績查詢和檔案下載需要在 E3 網站。</p>
+          </div>
+          <div style="margin-bottom: 12px;">
+            <p style="margin: 0 0 4px; font-weight: bold;">Q: 翻譯功能怎麼用？</p>
+            <p style="margin: 0; color: #666; font-size: 12px;">A: 查看公告/信件詳細內容後，點擊「🌐 中→英」或「🌐 英→中」按鈕即可翻譯。未設定 Gemini API 時會使用 Google Translate 免費服務。翻譯會保留完整的段落格式、連結和附件。</p>
+          </div>
+          <div style="margin-bottom: 12px;">
+            <p style="margin: 0 0 4px; font-weight: bold;">Q: 徽章數字是什麼意思？</p>
+            <p style="margin: 0; color: #666; font-size: 12px;">A: 浮動按鈕和擴充功能圖示的紅色徽章顯示未讀通知總數，包含：未讀公告、未讀信件、24小時內到期的作業。</p>
+          </div>
+          <div style="margin-bottom: 12px;">
+            <p style="margin: 0 0 4px; font-weight: bold;">Q: 資料會被上傳嗎？</p>
+            <p style="margin: 0; color: #666; font-size: 12px;">A: 不會！所有資料僅儲存在本地瀏覽器。使用 AI 翻譯時，內容會傳送至 Google AI 或 Google Translate 進行翻譯。</p>
+          </div>
+        </section>
+
+        <section style="background: white; padding: 16px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+          <h3 style="margin: 0 0 12px; font-size: 15px; color: #7c4dff;">🔗 相關連結</h3>
+          <ul style="margin: 0; padding-left: 20px;">
+            <li style="margin-bottom: 8px;"><a href="https://e3p.nycu.edu.tw/" target="_blank" style="color: #7c4dff; text-decoration: underline;">NYCU E3 平台</a></li>
+            <li style="margin-bottom: 8px;"><a href="https://github.com/CBJ0519/portal_e3_helper" target="_blank" style="color: #7c4dff; text-decoration: underline;">GitHub 專案</a></li>
+            <li style="margin-bottom: 8px;"><a href="https://forms.gle/SbPcqgVRuNSdVyqK9" target="_blank" style="color: #e74c3c; text-decoration: underline; font-weight: 600;">🐛 問題回報 / 功能建議</a></li>
+          </ul>
+        </section>
+      </div>
+    `;
+    sidebar.appendChild(helpContent);
+
+    // 作業倒數 tab 切換事件（所有網站都需要）
+    assignmentTab.addEventListener('click', () => {
+      assignmentTab.classList.add('active');
+      notificationTab.classList.remove('active');
+      announcementTab.classList.remove('active');
+      helpTab.classList.remove('active');
+      assignmentContent.classList.add('active');
+      notificationContent.classList.remove('active');
+      announcementContent.classList.remove('active');
+      helpContent.classList.remove('active');
+      if (onE3Site) {
         gradeTab.classList.remove('active');
         downloadTab.classList.remove('active');
-        announcementTab.classList.remove('active');
-        assignmentContent.classList.add('active');
         gradeContent.classList.remove('active');
         downloadContent.classList.remove('active');
-        announcementContent.classList.remove('active');
-      });
-    }
+      }
+    });
 
     // 只在 E3 網站添加成績和下載 tab 的事件處理器
     if (onE3Site) {
@@ -894,72 +2031,38 @@ function createSidebar() {
       gradeTab.classList.add('active');
       assignmentTab.classList.remove('active');
       downloadTab.classList.remove('active');
+      notificationTab.classList.remove('active');
       announcementTab.classList.remove('active');
+      helpTab.classList.remove('active');
       gradeContent.classList.add('active');
       assignmentContent.classList.remove('active');
       downloadContent.classList.remove('active');
+      notificationContent.classList.remove('active');
       announcementContent.classList.remove('active');
+      helpContent.classList.remove('active');
 
-      // 檢查是否需要顯示歡迎訊息
-      const storage = await chrome.storage.local.get(['lastSyncTime', 'courses', 'gradeData']);
-      const hasNeverSynced = !storage.lastSyncTime;
-      const hasNoCourses = !storage.courses || storage.courses.length === 0;
+      // 顯示課程列表，隱藏課程詳情
+      const courseListArea = document.querySelector('.e3-helper-course-list-area');
+      const courseDetailArea = document.querySelector('.e3-helper-course-detail-area');
+      if (courseListArea) courseListArea.style.display = 'block';
+      if (courseDetailArea) courseDetailArea.style.display = 'none';
 
-      console.log('E3 Helper: 成績分析 tab 點擊', {
-        hasNeverSynced,
-        hasNoCourses,
-        gradeDataInMemory: Object.keys(gradeData).length,
-        gradeDataInStorage: storage.gradeData ? Object.keys(storage.gradeData).length : 0
-      });
-
-      if (hasNeverSynced && hasNoCourses) {
-        // 顯示歡迎訊息
-        const statsContainer = document.querySelector('.e3-helper-grade-stats');
-        if (statsContainer) {
-          const isOnE3 = window.location.hostname.includes('e3.nycu.edu.tw') || window.location.hostname.includes('e3p.nycu.edu.tw');
-          statsContainer.innerHTML = `
-            <div class="e3-helper-welcome-message">
-              <h3>👋 歡迎使用成績分析</h3>
-              ${isOnE3 ? `
-                <p>請先點擊上方的 <span class="highlight">🔄 同步</span> 按鈕來載入課程資料。</p>
-              ` : `
-                <p>請先訪問 <a href="https://e3p.nycu.edu.tw/" target="_blank" style="color: white; text-decoration: underline; font-weight: 600;">NYCU E3</a>，然後點擊 <span class="highlight">🔄 同步</span> 按鈕。</p>
-              `}
-              <p>同步完成後，再切換到此分頁即可查看成績分析。</p>
-            </div>
-          `;
-        }
-      } else if (Object.keys(gradeData).length === 0) {
-        // 記憶體中沒有成績資料
-        // 先嘗試從 storage 載入
-        if (storage.gradeData && Object.keys(storage.gradeData).length > 0) {
-          console.log('E3 Helper: 從 storage 載入成績資料');
-          gradeData = storage.gradeData;
-          if (storage.courses) {
-            allCourses = storage.courses;
-          }
-          displayCourseGradeList();
-        } else {
-          // storage 中也沒有成績資料
-          // 顯示提示訊息（displayCourseGradeList 會處理）
-          console.log('E3 Helper: storage 中也沒有成績資料，顯示提示訊息');
-          displayCourseGradeList();
-        }
-      } else {
-        // 記憶體中已有成績資料，直接顯示
-        console.log('E3 Helper: 記憶體中已有成績資料，直接顯示');
-        displayCourseGradeList();
-      }
+      // 載入課程列表
+      await loadAllCoursesList();
     });
 
     downloadTab.addEventListener('click', async () => {
       downloadTab.classList.add('active');
       assignmentTab.classList.remove('active');
       gradeTab.classList.remove('active');
+      notificationTab.classList.remove('active');
       announcementTab.classList.remove('active');
+      helpTab.classList.remove('active');
       downloadContent.classList.add('active');
       assignmentContent.classList.remove('active');
       gradeContent.classList.remove('active');
+      notificationContent.classList.remove('active');
+      helpContent.classList.remove('active');
       announcementContent.classList.remove('active');
 
       // 檢查是否需要顯示歡迎訊息
@@ -974,7 +2077,7 @@ function createSidebar() {
           const isOnE3 = window.location.hostname.includes('e3.nycu.edu.tw') || window.location.hostname.includes('e3p.nycu.edu.tw');
           pdfListContainer.innerHTML = `
             <div class="e3-helper-welcome-message">
-              <h3>👋 歡迎使用教材下載</h3>
+              <h3>👋 歡迎使用檔案下載</h3>
               ${isOnE3 ? `
                 <p>請先點擊上方的 <span class="highlight">🔄 同步</span> 按鈕來載入課程資料。</p>
                 <p>同步完成後，您可以：</p>
@@ -1019,9 +2122,85 @@ function createSidebar() {
       }
 
       // 綁定課程選擇相關按鈕
+      const loadPastCoursesBtn = document.getElementById('e3-helper-load-past-courses');
       const selectAllCoursesBtn = document.getElementById('e3-helper-select-all-courses');
       const deselectAllCoursesBtn = document.getElementById('e3-helper-deselect-all-courses');
       const startScanBtn = document.getElementById('e3-helper-start-scan');
+
+      // 載入歷年課程按鈕
+      if (loadPastCoursesBtn && !loadPastCoursesBtn.dataset.bound) {
+        loadPastCoursesBtn.dataset.bound = 'true';
+        loadPastCoursesBtn.addEventListener('click', async () => {
+          const courseListContainer = document.getElementById('e3-helper-course-list');
+          courseListContainer.innerHTML = '<div class="e3-helper-loading">載入歷年課程中...</div>';
+
+          try {
+            // 載入歷年課程（會合併到現有列表）
+            const sesskey = getSesskey();
+            const url = `https://e3p.nycu.edu.tw/lib/ajax/service.php${sesskey ? '?sesskey=' + sesskey : ''}`;
+
+            const response = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify([{
+                index: 0,
+                methodname: 'core_course_get_enrolled_courses_by_timeline_classification',
+                args: {
+                  offset: 0,
+                  limit: 0,
+                  classification: 'past',
+                  sort: 'fullname'
+                }
+              }])
+            });
+
+            const data = await response.json();
+            if (data && data[0] && data[0].data && data[0].data.courses) {
+              const pastCourses = data[0].data.courses;
+
+              // 合併歷年課程到現有列表（避免重複）
+              pastCourses.forEach(course => {
+                if (!allCourses.find(c => c.id === course.id)) {
+                  allCourses.push(course);
+                }
+              });
+
+              console.log(`E3 Helper: 已載入 ${pastCourses.length} 個歷年課程，總共 ${allCourses.length} 個課程`);
+
+              // 更新 storage
+              await chrome.storage.local.set({ courses: allCourses });
+
+              // 直接更新顯示（不重新載入）
+              courseListContainer.innerHTML = allCourses.map(course => {
+                const isSelected = selectedCourses.has(course.id);
+                return `
+                  <div class="e3-helper-course-item" data-course-id="${course.id}">
+                    <input type="checkbox" class="e3-helper-course-checkbox" data-course-id="${course.id}" ${isSelected ? 'checked' : ''}>
+                    <span class="e3-helper-course-name">${course.fullname}</span>
+                  </div>
+                `;
+              }).join('');
+
+              // 綁定勾選框事件
+              courseListContainer.querySelectorAll('.e3-helper-course-checkbox').forEach(checkbox => {
+                checkbox.addEventListener('change', (e) => {
+                  const courseId = parseInt(e.target.dataset.courseId);
+                  if (e.target.checked) {
+                    selectedCourses.add(courseId);
+                  } else {
+                    selectedCourses.delete(courseId);
+                  }
+                });
+              });
+            } else {
+              courseListContainer.innerHTML = '<div class="e3-helper-loading">無法載入歷年課程</div>';
+            }
+          } catch (e) {
+            console.error('E3 Helper: 載入歷年課程失敗:', e);
+            courseListContainer.innerHTML = '<div class="e3-helper-loading">載入失敗</div>';
+          }
+        });
+      }
 
       if (selectAllCoursesBtn && !selectAllCoursesBtn.dataset.bound) {
         selectAllCoursesBtn.dataset.bound = 'true';
@@ -1062,15 +2241,45 @@ function createSidebar() {
     });
     } // 結束 if (onE3Site) - 成績和下載 tab 事件處理器
 
+    // 通知中心 tab 事件（新增）
+    notificationTab.addEventListener('click', async () => {
+      notificationTab.classList.add('active');
+      assignmentTab.classList.remove('active');
+      announcementTab.classList.remove('active');
+      helpTab.classList.remove('active');
+      if (onE3Site) {
+        gradeTab.classList.remove('active');
+        downloadTab.classList.remove('active');
+      }
+      notificationContent.classList.add('active');
+      assignmentContent.classList.remove('active');
+      announcementContent.classList.remove('active');
+      helpContent.classList.remove('active');
+      if (onE3Site) {
+        gradeContent.classList.remove('active');
+        downloadContent.classList.remove('active');
+      }
+
+      // 載入並顯示通知
+      await loadNotifications();
+
+      // 標記所有通知為已讀
+      await markAllNotificationsAsRead();
+    });
+
     announcementTab.addEventListener('click', async () => {
       announcementTab.classList.add('active');
       assignmentTab.classList.remove('active');
+      notificationTab.classList.remove('active');
+      helpTab.classList.remove('active');
       if (onE3Site) {
         gradeTab.classList.remove('active');
         downloadTab.classList.remove('active');
       }
       announcementContent.classList.add('active');
       assignmentContent.classList.remove('active');
+      notificationContent.classList.remove('active');
+      helpContent.classList.remove('active');
       if (onE3Site) {
         gradeContent.classList.remove('active');
         downloadContent.classList.remove('active');
@@ -1155,14 +2364,11 @@ function createSidebar() {
                 <div style="font-weight: 600; margin-bottom: 6px;">⚠️ 資料不完整</div>
                 <div style="font-size: 12px; margin-bottom: 8px;">
                   ${hasAnnouncements ? '已載入公告，但尚未載入信件資料。' : '已載入信件，但尚未載入公告資料。'}
+                  ${!isOnE3Site() ? '<br><small>將在背景自動連接到 E3 載入</small>' : ''}
                 </div>
-                ${isOnE3Site() ? `
-                  <button id="e3-helper-reload-all-later" style="background: #ffc107; color: #000; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">
-                    🔄 重新載入完整資料
-                  </button>
-                ` : `
-                  <div style="font-size: 11px;">請訪問 E3 網站重新載入</div>
-                `}
+                <button id="e3-helper-reload-all-later" style="background: #ffc107; color: #000; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600;">
+                  🔄 重新載入完整資料
+                </button>
               </div>
             `;
             announcementListContainer.insertAdjacentHTML('afterbegin', warningHTML);
@@ -1173,8 +2379,44 @@ function createSidebar() {
               reloadBtn.addEventListener('click', async () => {
                 reloadBtn.disabled = true;
                 reloadBtn.textContent = '⏳ 載入中...';
-                await Promise.all([loadAnnouncements(), loadMessages()]);
-                displayAnnouncements();
+
+                try {
+                  if (isOnE3Site()) {
+                    // 在 E3 網站，直接載入
+                    await Promise.all([loadAnnouncements(), loadMessages()]);
+                    displayAnnouncements();
+                    reloadBtn.textContent = '✅ 載入完成';
+                  } else {
+                    // 不在 E3 網站，通過 background 載入
+                    const response = await chrome.runtime.sendMessage({
+                      action: 'loadAnnouncementsAndMessages'
+                    });
+
+                    if (response && response.success) {
+                      // 從 storage 重新載入資料並顯示
+                      const storage = await chrome.storage.local.get(['announcements', 'messages']);
+                      if (storage.announcements) allAnnouncements = storage.announcements;
+                      if (storage.messages) allMessages = storage.messages;
+                      displayAnnouncements();
+                      reloadBtn.textContent = '✅ 載入完成';
+                    } else {
+                      throw new Error(response?.error || '載入失敗');
+                    }
+                  }
+
+                  // 2秒後恢復按鈕
+                  setTimeout(() => {
+                    reloadBtn.disabled = false;
+                    reloadBtn.textContent = '🔄 重新載入完整資料';
+                  }, 2000);
+                } catch (error) {
+                  console.error('E3 Helper: 重新載入失敗', error);
+                  reloadBtn.textContent = '❌ 載入失敗';
+                  reloadBtn.disabled = false;
+
+                  // 顯示錯誤提示
+                  alert('載入失敗：' + error.message);
+                }
               });
             }
           }
@@ -1185,6 +2427,79 @@ function createSidebar() {
       }
     });
 
+    // 使用說明 tab 切換事件
+    helpTab.addEventListener('click', () => {
+      helpTab.classList.add('active');
+      assignmentTab.classList.remove('active');
+      announcementTab.classList.remove('active');
+      notificationTab.classList.remove('active');
+      helpContent.classList.add('active');
+      assignmentContent.classList.remove('active');
+      announcementContent.classList.remove('active');
+      notificationContent.classList.remove('active');
+      if (onE3Site) {
+        gradeTab.classList.remove('active');
+        downloadTab.classList.remove('active');
+        gradeContent.classList.remove('active');
+        downloadContent.classList.remove('active');
+      }
+    });
+
+    // 添加 resize handle
+    const resizeHandle = document.createElement('div');
+    resizeHandle.className = 'e3-helper-resize-handle';
+    sidebar.insertBefore(resizeHandle, sidebar.firstChild);
+
+    // 實作拖曳調整寬度
+    let isResizing = false;
+    let startX = 0;
+    let startWidth = 0;
+
+    resizeHandle.addEventListener('mousedown', (e) => {
+      isResizing = true;
+      startX = e.clientX;
+      startWidth = sidebar.offsetWidth;
+
+      // 禁用過渡動畫讓拖曳更順暢
+      sidebar.style.transition = 'none';
+
+      // 防止選取文字
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isResizing) return;
+
+      const deltaX = startX - e.clientX; // 向左拖是正值
+      const newWidth = startWidth + deltaX;
+
+      // 限制寬度範圍
+      if (newWidth >= 280 && newWidth <= 800) {
+        sidebar.style.width = newWidth + 'px';
+      }
+    });
+
+    document.addEventListener('mouseup', async () => {
+      if (!isResizing) return;
+
+      isResizing = false;
+      // 恢復過渡動畫
+      sidebar.style.transition = 'transform 0.3s ease';
+
+      // 儲存寬度設定
+      const width = sidebar.offsetWidth;
+      await chrome.storage.local.set({ sidebarWidth: width });
+      console.log('E3 Helper: 側邊欄寬度已儲存:', width);
+    });
+
+    // 載入儲存的寬度設定
+    chrome.storage.local.get(['sidebarWidth'], (result) => {
+      if (result.sidebarWidth) {
+        sidebar.style.width = result.sidebarWidth + 'px';
+        console.log('E3 Helper: 載入側邊欄寬度:', result.sidebarWidth);
+      }
+    });
+
     document.body.appendChild(sidebar);
   }
 
@@ -1192,7 +2507,7 @@ function createSidebar() {
     // 創建收合按鈕（獨立於側欄）
     toggleBtn = document.createElement('button');
     toggleBtn.className = 'e3-helper-sidebar-toggle';
-    toggleBtn.innerHTML = '<span class="e3-helper-toggle-icon">📚</span><span class="e3-helper-toggle-text">E3小助手</span>';
+    toggleBtn.innerHTML = '<span class="e3-helper-toggle-icon">📚</span><span class="e3-helper-toggle-text">E3小助手</span><span class="e3-helper-toggle-badge" id="e3-helper-toggle-badge"></span>';
     toggleBtn.title = 'E3 小助手（可上下拖曳調整位置）';
 
     // 從 localStorage 載入保存的位置
@@ -1296,6 +2611,320 @@ function createSidebar() {
   if (!countdownInterval) {
     countdownInterval = setInterval(updateCountdowns, 1000);
   }
+
+  // 創建 log modal 和 settings modal（只創建一次）
+  createLogModal();
+  createSettingsModal();
+}
+
+// 創建 log modal 面板
+function createLogModal() {
+  // 檢查是否已經存在
+  if (document.getElementById('e3-helper-log-modal')) {
+    return;
+  }
+
+  const logModal = document.createElement('div');
+  logModal.id = 'e3-helper-log-modal';
+  logModal.className = 'e3-helper-log-modal';
+
+  logModal.innerHTML = `
+    <div class="e3-helper-log-modal-content">
+      <div class="e3-helper-log-modal-header">
+        <h2>📋 操作日誌</h2>
+        <button class="e3-helper-log-modal-close" id="e3-helper-close-log">&times;</button>
+      </div>
+      <div class="e3-helper-log-modal-body">
+        <div class="e3-helper-log-container">
+          <div id="e3-helper-log-content" class="e3-helper-log-content">
+            <div class="e3-helper-log-placeholder">尚無日誌記錄</div>
+          </div>
+        </div>
+      </div>
+      <div class="e3-helper-log-modal-footer">
+        <button id="e3-helper-clear-log" class="e3-helper-log-btn e3-helper-log-btn-secondary">清除日誌</button>
+        <button id="e3-helper-copy-log" class="e3-helper-log-btn e3-helper-log-btn-primary">複製日誌</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(logModal);
+
+  // 使用事件委派綁定 log 按鈕（因為按鈕可能在 modal 創建後才存在）
+  document.body.addEventListener('click', (e) => {
+    if (e.target && e.target.id === 'e3-helper-log-btn') {
+      logModal.classList.add('show');
+      // 打開時更新顯示
+      const logContent = document.getElementById('e3-helper-log-content');
+      if (logContent) {
+        logContent.innerHTML = getLogsHTML();
+        attachLogEventListeners();
+        // 滾動到底部
+        logContent.scrollTop = logContent.scrollHeight;
+      }
+    }
+  });
+
+  document.getElementById('e3-helper-close-log').addEventListener('click', () => {
+    logModal.classList.remove('show');
+  });
+
+  document.getElementById('e3-helper-clear-log').addEventListener('click', () => {
+    clearLogs();
+  });
+
+  document.getElementById('e3-helper-copy-log').addEventListener('click', () => {
+    copyLogsToClipboard();
+  });
+
+  // 點擊背景關閉
+  logModal.addEventListener('click', (e) => {
+    if (e.target === logModal) {
+      logModal.classList.remove('show');
+    }
+  });
+}
+
+// 創建設定 Modal
+function createSettingsModal() {
+  // 檢查是否已經存在
+  if (document.getElementById('e3-helper-settings-modal')) {
+    return;
+  }
+
+  const settingsModal = document.createElement('div');
+  settingsModal.id = 'e3-helper-settings-modal';
+  settingsModal.className = 'e3-helper-log-modal'; // 複用 log modal 樣式
+
+  settingsModal.innerHTML = `
+    <div class="e3-helper-log-modal-content">
+      <div class="e3-helper-log-modal-header">
+        <h2>⚙️ 設定</h2>
+        <button class="e3-helper-log-modal-close" id="e3-helper-close-settings">&times;</button>
+      </div>
+      <div class="e3-helper-log-modal-body">
+        <div class="e3-helper-settings-container">
+          <div class="e3-helper-settings-section">
+            <h3 class="e3-helper-settings-title">🤖 AI 功能（Google Gemini）</h3>
+            <div class="e3-helper-settings-description">
+              使用 Google Gemini AI 提供智能翻譯和摘要功能
+            </div>
+
+            <div class="e3-helper-setting-item">
+              <label class="e3-helper-setting-label">
+                <input type="checkbox" id="e3-helper-enable-ai">
+                <span>啟用 AI 功能</span>
+              </label>
+            </div>
+
+            <div id="e3-helper-ai-settings" style="display: none;">
+              <div class="e3-helper-setting-item">
+                <label class="e3-helper-setting-label-block">
+                  <span>Gemini API Key</span>
+                  <input type="password" id="e3-helper-gemini-key" class="e3-helper-setting-input" placeholder="AIza...">
+                </label>
+              </div>
+
+              <div class="e3-helper-setting-item">
+                <label class="e3-helper-setting-label-block">
+                  <span>AI 模型</span>
+                  <input type="text" id="e3-helper-gemini-model" class="e3-helper-setting-input" value="gemini-2.5-flash" readonly style="background-color: #f5f5f5; cursor: not-allowed;">
+                </label>
+                <div style="font-size: 12px; color: #666; margin-top: 4px;">
+                  使用 Gemini 2.5 Flash 模型：配額消耗少、準確度高
+                </div>
+              </div>
+
+              <div class="e3-helper-setting-tip">
+                <strong>💡 如何獲取 Gemini API Key？</strong><br>
+                1. 訪問 <a href="https://makersuite.google.com/app/apikey" target="_blank">Google AI Studio</a><br>
+                2. 點擊「Get API key」建立金鑰<br>
+                3. 每天有免費額度可使用（1500 次請求/天）<br><br>
+                <strong>✨ Gemini 2.5 Flash 優點：</strong><br>
+                • 準確度高：能精確理解翻譯和摘要意圖<br>
+                • 配額友善：每日免費額度可進行大量操作<br>
+                • 快速回應：翻譯和摘要速度快
+              </div>
+
+              <!-- 連接狀態 -->
+              <div class="e3-helper-setting-item" style="display: flex; align-items: center; justify-content: space-between;">
+                <div id="e3-helper-ai-status" class="e3-helper-ai-status">
+                  <span class="e3-helper-status-icon">⏳</span>
+                  <span class="e3-helper-status-text">未檢測</span>
+                </div>
+                <button id="e3-helper-test-ai-btn" class="e3-helper-test-btn">測試連接</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="e3-helper-settings-section">
+            <h3 class="e3-helper-settings-title">ℹ️ 關於 AI 功能</h3>
+            <div class="e3-helper-settings-description">
+              <strong>功能：</strong><br>
+              • AI 翻譯：智能翻譯公告和信件內容<br>
+              • AI 摘要：自動摘要長篇公告和信件<br>
+              • 24小時提醒：即將到期作業通知<br><br>
+              <strong>注意：</strong><br>
+              • 需要有效的 Gemini API Key<br>
+              • AI 推理需要幾秒鐘時間<br>
+              • 翻譯和摘要功能僅在啟用 AI 後可用
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="e3-helper-log-modal-footer">
+        <button id="e3-helper-save-settings" class="e3-helper-log-btn e3-helper-log-btn-primary">儲存設定</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(settingsModal);
+
+  // 綁定設定按鈕點擊事件（使用事件委派）
+  document.body.addEventListener('click', async (e) => {
+    if (e.target && e.target.id === 'e3-helper-settings-btn') {
+      settingsModal.classList.add('show');
+      // 打開時載入當前設定
+      await loadAISettings();
+    }
+  });
+
+  // 關閉按鈕
+  document.getElementById('e3-helper-close-settings').addEventListener('click', () => {
+    settingsModal.classList.remove('show');
+  });
+
+  // 儲存設定按鈕
+  document.getElementById('e3-helper-save-settings').addEventListener('click', async () => {
+    await saveAISettings();
+    settingsModal.classList.remove('show');
+  });
+
+  // 啟用 AI 複選框
+  document.getElementById('e3-helper-enable-ai').addEventListener('change', (e) => {
+    const aiSettings = document.getElementById('e3-helper-ai-settings');
+    if (e.target.checked) {
+      aiSettings.style.display = 'block';
+    } else {
+      aiSettings.style.display = 'none';
+    }
+  });
+
+  // 測試連接按鈕
+  document.getElementById('e3-helper-test-ai-btn').addEventListener('click', async () => {
+    await testAIConnection();
+  });
+
+  // 點擊背景關閉
+  settingsModal.addEventListener('click', (e) => {
+    if (e.target === settingsModal) {
+      settingsModal.classList.remove('show');
+    }
+  });
+}
+
+// 載入 AI 設定
+async function loadAISettings() {
+  const storage = await chrome.storage.local.get(['aiSettings']);
+  const aiSettings = storage.aiSettings || {
+    enabled: false,
+    geminiApiKey: '',
+    geminiModel: 'gemini-2.5-flash'
+  };
+
+  document.getElementById('e3-helper-enable-ai').checked = aiSettings.enabled;
+  document.getElementById('e3-helper-gemini-key').value = aiSettings.geminiApiKey;
+  document.getElementById('e3-helper-gemini-model').value = aiSettings.geminiModel;
+
+  // 根據啟用狀態顯示/隱藏 AI 設定
+  const aiSettingsDiv = document.getElementById('e3-helper-ai-settings');
+  if (aiSettings.enabled) {
+    aiSettingsDiv.style.display = 'block';
+  } else {
+    aiSettingsDiv.style.display = 'none';
+  }
+}
+
+// 儲存 AI 設定
+async function saveAISettings() {
+  const enabled = document.getElementById('e3-helper-enable-ai').checked;
+  const geminiApiKey = document.getElementById('e3-helper-gemini-key').value.trim();
+  const geminiModel = document.getElementById('e3-helper-gemini-model').value;
+
+  const aiSettings = {
+    enabled: enabled,
+    geminiApiKey: geminiApiKey,
+    geminiModel: geminiModel
+  };
+
+  await chrome.storage.local.set({ aiSettings: aiSettings });
+
+  console.log('E3 Helper: AI 設定已儲存', aiSettings);
+  alert('設定已儲存！');
+}
+
+// 測試 AI 連接
+async function testAIConnection() {
+  const statusDiv = document.getElementById('e3-helper-ai-status');
+  const statusIcon = statusDiv.querySelector('.e3-helper-status-icon');
+  const statusText = statusDiv.querySelector('.e3-helper-status-text');
+  const testBtn = document.getElementById('e3-helper-test-ai-btn');
+
+  const geminiApiKey = document.getElementById('e3-helper-gemini-key').value.trim();
+
+  if (!geminiApiKey) {
+    statusIcon.textContent = '❌';
+    statusText.textContent = '請輸入 API Key';
+    statusDiv.style.color = '#f44336';
+    return;
+  }
+
+  // 顯示測試中
+  statusIcon.textContent = '⏳';
+  statusText.textContent = '測試中...';
+  statusDiv.style.color = '#ff9800';
+  testBtn.disabled = true;
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: 'Hello, test connection.'
+            }]
+          }]
+        })
+      }
+    );
+
+    if (response.ok) {
+      statusIcon.textContent = '✅';
+      statusText.textContent = '連接成功';
+      statusDiv.style.color = '#4caf50';
+      console.log('E3 Helper: Gemini API 連接測試成功');
+    } else {
+      const errorData = await response.json();
+      statusIcon.textContent = '❌';
+      statusText.textContent = '連接失敗';
+      statusDiv.style.color = '#f44336';
+      console.error('E3 Helper: Gemini API 連接測試失敗', errorData);
+      alert(`連接失敗：${errorData.error?.message || '未知錯誤'}`);
+    }
+  } catch (error) {
+    statusIcon.textContent = '❌';
+    statusText.textContent = '連接失敗';
+    statusDiv.style.color = '#f44336';
+    console.error('E3 Helper: Gemini API 連接測試失敗', error);
+    alert(`連接失敗：${error.message}`);
+  } finally {
+    testBtn.disabled = false;
+  }
 }
 
 // 顯示歡迎訊息（首次使用）
@@ -1380,10 +3009,18 @@ async function updateSidebarContent() {
   listContainer.innerHTML = sortedAssignments.map(assignment => {
     const countdown = formatCountdown(assignment.deadline);
     const deadlineDate = new Date(assignment.deadline);
-    const dateStr = `${deadlineDate.getMonth() + 1}月${deadlineDate.getDate()}日 ${deadlineDate.getHours().toString().padStart(2, '0')}:${deadlineDate.getMinutes().toString().padStart(2, '0')}`;
+
+    // 格式化日期 - 包含星期和更詳細的資訊
+    const weekdays = ['週日', '週一', '週二', '週三', '週四', '週五', '週六'];
+    const weekday = weekdays[deadlineDate.getDay()];
+    const dateStr = `${deadlineDate.getMonth() + 1}/${deadlineDate.getDate()} (${weekday}) ${deadlineDate.getHours().toString().padStart(2, '0')}:${deadlineDate.getMinutes().toString().padStart(2, '0')}`;
 
     // 使用手動標記的狀態
     const manualStatus = assignment.manualStatus || 'pending';
+
+    // 檢查是否為24小時內到期且未繳交的緊急作業
+    const timeUntilDeadline = assignment.deadline - now;
+    const isUrgent = timeUntilDeadline > 0 && timeUntilDeadline <= 24 * 60 * 60 * 1000 && manualStatus !== 'submitted';
 
     // 決定樣式類別
     let statusClass = countdown.status;
@@ -1399,11 +3036,14 @@ async function updateSidebarContent() {
       statusToggleClass = 'submitted';
     }
 
+    // 緊急標籤
+    const urgentBadge = isUrgent ? '<span style="display: inline-block; background: #dc3545; color: white; font-size: 10px; padding: 2px 6px; border-radius: 3px; margin-left: 6px; font-weight: 600;">🚨 24hr內到期</span>' : '';
+
     const hasValidUrl = assignment.url && assignment.url !== '#' && assignment.url.startsWith('http');
 
     return `
       <a href="${hasValidUrl ? assignment.url : 'javascript:void(0);'}" target="${hasValidUrl ? '_blank' : '_self'}" class="e3-helper-assignment-item ${statusClass}" data-event-id="${assignment.eventId}" ${!hasValidUrl ? 'data-need-fetch="true"' : ''} style="display: block; text-decoration: none; color: inherit; cursor: pointer;">
-        <div class="e3-helper-assignment-name">${assignment.name}</div>
+        <div class="e3-helper-assignment-name">${assignment.name}${urgentBadge}</div>
         <div class="e3-helper-assignment-course">${assignment.course || '(未知課程)'}</div>
         <div class="e3-helper-assignment-deadline">
           📅 ${dateStr}
@@ -1413,6 +3053,9 @@ async function updateSidebarContent() {
       </a>
     `;
   }).join('');
+
+  // 檢查並創建24小時內到期作業的通知
+  await checkUrgentAssignments(sortedAssignments, now);
 
   // 為需要獲取 URL 的作業添加點擊事件
   listContainer.querySelectorAll('.e3-helper-assignment-item[data-need-fetch="true"]').forEach(link => {
@@ -1470,6 +3113,82 @@ async function updateSidebarContent() {
   });
 }
 
+// 檢查24小時內到期的緊急作業並創建通知
+async function checkUrgentAssignments(assignments, currentTime) {
+  // 從 storage 獲取現有的緊急作業通知
+  const storage = await chrome.storage.local.get(['urgentAssignmentNotifications']);
+  let urgentNotifications = storage.urgentAssignmentNotifications || [];
+
+  // 找出24小時內到期且未繳交的作業
+  const urgentAssignments = assignments.filter(assignment => {
+    const timeUntilDeadline = assignment.deadline - currentTime;
+    const manualStatus = assignment.manualStatus || 'pending';
+    return timeUntilDeadline > 0 &&
+           timeUntilDeadline <= 24 * 60 * 60 * 1000 &&
+           manualStatus !== 'submitted';
+  });
+
+  console.log(`E3 Helper: 發現 ${urgentAssignments.length} 個24小時內到期的緊急作業`);
+
+  // 為每個緊急作業創建或更新通知
+  urgentAssignments.forEach(assignment => {
+    // 檢查是否已經有這個作業的未讀通知
+    const existingNotification = urgentNotifications.find(n => n.eventId === assignment.eventId);
+
+    if (!existingNotification) {
+      // 創建新通知
+      const timeUntilDeadline = assignment.deadline - currentTime;
+      const hoursLeft = Math.floor(timeUntilDeadline / (1000 * 60 * 60));
+      const minutesLeft = Math.floor((timeUntilDeadline % (1000 * 60 * 60)) / (1000 * 60));
+
+      let timeText = '';
+      if (hoursLeft > 0) {
+        timeText = `還有 ${hoursLeft} 小時 ${minutesLeft} 分鐘`;
+      } else {
+        timeText = `還有 ${minutesLeft} 分鐘`;
+      }
+
+      const notification = {
+        id: `urgent-${assignment.eventId}-${currentTime}`,
+        eventId: assignment.eventId,
+        type: 'urgent',
+        title: assignment.name,
+        message: `${timeText}截止 - ${assignment.course || '(未知課程)'}`,
+        url: assignment.url,
+        timestamp: currentTime,
+        read: false
+      };
+
+      urgentNotifications.push(notification);
+      console.log(`E3 Helper: 創建緊急作業通知：${assignment.name}`);
+    }
+  });
+
+  // 移除已經過期或已繳交的緊急通知
+  const beforeCount = urgentNotifications.length;
+  urgentNotifications = urgentNotifications.filter(notification => {
+    const assignment = assignments.find(a => a.eventId === notification.eventId);
+    if (!assignment) return false;
+
+    const timeUntilDeadline = assignment.deadline - currentTime;
+    const manualStatus = assignment.manualStatus || 'pending';
+
+    // 保留未到期且未繳交的通知
+    return timeUntilDeadline > 0 && manualStatus !== 'submitted';
+  });
+  const afterCount = urgentNotifications.length;
+
+  if (beforeCount !== afterCount) {
+    console.log(`E3 Helper: 移除 ${beforeCount - afterCount} 個過期或已繳交的緊急通知`);
+  }
+
+  // 儲存更新後的緊急通知
+  await chrome.storage.local.set({ urgentAssignmentNotifications: urgentNotifications });
+
+  // 更新通知 badge
+  await updateNotificationBadge();
+}
+
 // 更新所有倒數時間
 function updateCountdowns() {
   const items = document.querySelectorAll('.e3-helper-assignment-item');
@@ -1487,8 +3206,10 @@ function updateCountdowns() {
         countdownEl.className = `e3-helper-assignment-countdown ${countdown.status}`;
       }
 
-      // 更新項目樣式
-      item.className = `e3-helper-assignment-item ${countdown.status}`;
+      // 更新項目樣式 - 保留手動標記的已繳交狀態
+      const manualStatus = assignment.manualStatus || 'pending';
+      const statusClass = manualStatus === 'submitted' ? 'completed' : countdown.status;
+      item.className = `e3-helper-assignment-item ${statusClass}`;
     }
   });
 }
@@ -1565,14 +3286,15 @@ async function getEventDetails(eventId) {
 
 // ==================== 成績分析功能 ====================
 
-// 載入課程列表
-async function loadCourseList() {
+// 載入課程列表（支援當前課程和歷年課程）
+async function loadCourseList(classification = 'inprogress') {
   const select = document.getElementById('e3-helper-course-select');
   const statsContainer = document.querySelector('.e3-helper-grade-stats');
 
   if (!select) return;
 
-  statsContainer.innerHTML = '<div class="e3-helper-loading">載入課程中...</div>';
+  const loadingText = classification === 'past' ? '載入歷年課程中...' : '載入課程中...';
+  statsContainer.innerHTML = `<div class="e3-helper-loading">${loadingText}</div>`;
 
   try {
     const sesskey = getSesskey();
@@ -1587,17 +3309,32 @@ async function loadCourseList() {
         args: {
           offset: 0,
           limit: 0,
-          classification: 'inprogress',
+          classification: classification, // 'inprogress' 或 'past'
           sort: 'fullname'
         }
       }])
     });
 
     const data = await response.json();
-    console.log('E3 Helper: 課程列表回應:', data);
+    console.log(`E3 Helper: 課程列表回應 (${classification}):`, data);
 
     if (data && data[0] && data[0].data && data[0].data.courses) {
-      allCourses = data[0].data.courses;
+      const courses = data[0].data.courses;
+
+      // 根據分類決定是否合併或替換
+      if (classification === 'past') {
+        // 合併歷年課程到現有列表（避免重複）
+        courses.forEach(course => {
+          if (!allCourses.find(c => c.id === course.id)) {
+            allCourses.push(course);
+          }
+        });
+        console.log(`E3 Helper: 已載入 ${courses.length} 個歷年課程，總共 ${allCourses.length} 個課程`);
+      } else {
+        // 替換為當前課程
+        allCourses = courses;
+        console.log(`E3 Helper: 已載入 ${allCourses.length} 個當前課程`);
+      }
 
       // 清空並重新填充選單
       select.innerHTML = '<option value="">選擇課程...</option>';
@@ -1609,23 +3346,30 @@ async function loadCourseList() {
       });
 
       // 綁定選擇事件
-      select.addEventListener('change', (e) => {
-        const courseId = e.target.value;
-        if (courseId) {
-          loadCourseGrades(courseId);
-        } else {
-          statsContainer.innerHTML = '<div class="e3-helper-loading">請選擇課程</div>';
-        }
-      });
+      select.removeEventListener('change', handleCourseSelect); // 避免重複綁定
+      select.addEventListener('change', handleCourseSelect);
 
       statsContainer.innerHTML = '<div class="e3-helper-loading">請選擇課程</div>';
-      console.log(`E3 Helper: 已載入 ${allCourses.length} 個課程`);
+
+      // 儲存到 storage
+      await chrome.storage.local.set({ courses: allCourses });
     } else {
       statsContainer.innerHTML = '<div class="e3-helper-loading">無法載入課程列表</div>';
     }
   } catch (e) {
     console.error('E3 Helper: 載入課程列表失敗:', e);
     statsContainer.innerHTML = '<div class="e3-helper-loading">載入失敗</div>';
+  }
+}
+
+// 處理課程選擇事件
+function handleCourseSelect(e) {
+  const statsContainer = document.querySelector('.e3-helper-grade-stats');
+  const courseId = e.target.value;
+  if (courseId) {
+    loadCourseGrades(courseId);
+  } else {
+    statsContainer.innerHTML = '<div class="e3-helper-loading">請選擇課程</div>';
   }
 }
 
@@ -2021,6 +3765,544 @@ async function loadAllCourseGrades(forceRefresh = false) {
   }
 }
 
+// ==================== 課程列表功能 ====================
+
+// 更新上次檢測時間顯示
+function updateLastCheckTimeDisplay() {
+  const timeDisplay = document.getElementById('e3-helper-last-check-time');
+  if (!timeDisplay) return;
+
+  chrome.storage.local.get(['lastParticipantCheckTime'], (result) => {
+    const lastCheckTime = result.lastParticipantCheckTime;
+    if (!lastCheckTime) {
+      timeDisplay.textContent = '尚未檢測';
+      return;
+    }
+
+    const now = Date.now();
+    const diff = now - lastCheckTime;
+    const minutes = Math.floor(diff / (1000 * 60));
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+
+    if (minutes < 1) {
+      timeDisplay.textContent = '剛剛檢測';
+    } else if (minutes < 60) {
+      timeDisplay.textContent = `${minutes} 分鐘前檢測`;
+    } else if (hours < 24) {
+      timeDisplay.textContent = `${hours} 小時前檢測`;
+    } else {
+      const days = Math.floor(hours / 24);
+      timeDisplay.textContent = `${days} 天前檢測`;
+    }
+  });
+}
+
+// 載入所有課程列表
+async function loadAllCoursesList() {
+  console.log('E3 Helper: 載入課程列表');
+
+  const container = document.getElementById('e3-helper-course-list-container');
+  if (!container) return;
+
+  container.innerHTML = '<div class="e3-helper-loading">載入課程中...</div>';
+
+  try {
+    // 從 storage 載入課程和統計資料
+    const storage = await chrome.storage.local.get(['courses', 'participantCounts', 'lastParticipantCheckTime']);
+    let courses = storage.courses || [];
+    const participantCounts = storage.participantCounts || {};
+    const lastCheckTime = storage.lastParticipantCheckTime || 0;
+
+    // 更新上次檢測時間顯示
+    updateLastCheckTimeDisplay();
+
+    // 自動檢測邏輯：如果距離上次檢測超過 30 分鐘，自動執行一次檢測
+    const now = Date.now();
+    const timeSinceLastCheck = now - lastCheckTime;
+    const AUTO_CHECK_INTERVAL = 30 * 60 * 1000; // 30 分鐘
+
+    if (timeSinceLastCheck > AUTO_CHECK_INTERVAL && courses.length > 0) {
+      console.log('E3 Helper: 距離上次檢測已超過 30 分鐘，自動執行檢測...');
+
+      // 異步執行，不阻塞 UI
+      checkAllCoursesParticipants().then(() => {
+        console.log('E3 Helper: 自動檢測完成');
+        // 重新載入列表以顯示更新後的數據
+        loadAllCoursesList();
+      }).catch(error => {
+        console.error('E3 Helper: 自動檢測失敗', error);
+      });
+    }
+
+    if (courses.length === 0) {
+      container.innerHTML = `
+        <div class="e3-helper-welcome-message">
+          <h3>📚 尚無課程資料</h3>
+          <p>請先點擊上方的 🔄 同步按鈕來載入課程資料。</p>
+        </div>
+      `;
+      return;
+    }
+
+    // 將課程分組：正在進行的課程
+    allCourses = courses;
+    console.log(`E3 Helper: 載入了 ${courses.length} 個課程`);
+
+    // 生成課程列表 HTML
+    const courseListHTML = courses.map(course => {
+      const participantData = participantCounts[course.id];
+      const participantCount = participantData ? participantData.count : '未知';
+
+      return `
+        <div class="e3-helper-course-item" data-course-id="${course.id}" style="padding: 12px; border-bottom: 1px solid #e9ecef; cursor: pointer; transition: background 0.2s; position: relative;"
+             onmouseover="this.style.background='#f8f9fa'" onmouseout="this.style.background='white'">
+          <div style="padding-right: 55px; margin-bottom: 6px;">
+            <div style="font-size: 13px; font-weight: 600; color: #495057; line-height: 1.4; word-wrap: break-word;">${course.fullname}</div>
+            <span style="position: absolute; right: 12px; top: 12px; font-size: 11px; color: #6c757d; background: #e9ecef; padding: 2px 6px; border-radius: 3px; white-space: nowrap;">👥 ${participantCount}</span>
+          </div>
+          ${course.summary ? `<div style="font-size: 11px; color: #6c757d; line-height: 1.3; margin-top: 4px;">${course.summary.replace(/<[^>]*>/g, '').substring(0, 60)}${course.summary.length > 60 ? '...' : ''}</div>` : ''}
+        </div>
+      `;
+    }).join('');
+
+    container.innerHTML = courseListHTML;
+
+    // 綁定課程點擊事件
+    container.querySelectorAll('.e3-helper-course-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const courseId = item.dataset.courseId;
+        const course = courses.find(c => c.id === parseInt(courseId));
+        if (course) {
+          showCourseDetail(course);
+        }
+      });
+    });
+
+    // 綁定重新載入按鈕事件
+    const refreshBtn = document.getElementById('e3-helper-refresh-courses');
+    if (refreshBtn && !refreshBtn.dataset.bound) {
+      refreshBtn.dataset.bound = 'true';
+      refreshBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        refreshBtn.textContent = '🔄 載入中...';
+        refreshBtn.disabled = true;
+
+        // 重新從 API 載入課程
+        await loadCourseList('inprogress');
+
+        // 重新顯示課程列表
+        await loadAllCoursesList();
+
+        refreshBtn.textContent = '🔄 重新載入';
+        refreshBtn.disabled = false;
+      });
+    }
+
+    // 綁定檢查成員變動按鈕事件
+    const checkParticipantsBtn = document.getElementById('e3-helper-check-participants-btn');
+    if (checkParticipantsBtn && !checkParticipantsBtn.dataset.bound) {
+      checkParticipantsBtn.dataset.bound = 'true';
+      checkParticipantsBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const originalText = checkParticipantsBtn.textContent;
+        checkParticipantsBtn.textContent = '⏳ 檢查中...';
+        checkParticipantsBtn.disabled = true;
+
+        try {
+          console.log('E3 Helper: 手動觸發成員檢測');
+          const changes = await checkAllCoursesParticipants();
+
+          if (changes && changes.length > 0) {
+            checkParticipantsBtn.textContent = `✓ 發現 ${changes.length} 個變動`;
+            setTimeout(() => {
+              checkParticipantsBtn.textContent = originalText;
+            }, 3000);
+          } else {
+            checkParticipantsBtn.textContent = '✓ 無變動';
+            setTimeout(() => {
+              checkParticipantsBtn.textContent = originalText;
+            }, 3000);
+          }
+
+          // 重新載入課程列表以更新人數
+          await loadAllCoursesList();
+        } catch (error) {
+          console.error('E3 Helper: 檢查成員變動失敗', error);
+          checkParticipantsBtn.textContent = '✗ 檢查失敗';
+          setTimeout(() => {
+            checkParticipantsBtn.textContent = originalText;
+          }, 3000);
+        } finally {
+          checkParticipantsBtn.disabled = false;
+        }
+      });
+    }
+
+  } catch (error) {
+    console.error('E3 Helper: 載入課程列表失敗:', error);
+    container.innerHTML = `
+      <div class="e3-helper-welcome-message">
+        <h3>❌ 載入失敗</h3>
+        <p>${error.message}</p>
+      </div>
+    `;
+  }
+}
+
+// 顯示課程詳細資訊
+async function showCourseDetail(course) {
+  console.log('E3 Helper: 顯示課程詳情:', course.fullname);
+
+  // 隱藏列表，顯示詳情
+  const courseListArea = document.querySelector('.e3-helper-course-list-area');
+  const courseDetailArea = document.querySelector('.e3-helper-course-detail-area');
+  if (courseListArea) courseListArea.style.display = 'none';
+  if (courseDetailArea) courseDetailArea.style.display = 'block';
+
+  // 填充課程標題
+  const titleEl = document.getElementById('e3-helper-course-title');
+  const teacherEl = document.getElementById('e3-helper-course-teacher');
+  if (titleEl) titleEl.textContent = course.fullname;
+  if (teacherEl) teacherEl.textContent = course.summary ? course.summary.replace(/<[^>]*>/g, '').substring(0, 100) : '';
+
+  // 預設顯示統計頁面
+  showCourseStats(course);
+
+  // 綁定返回按鈕事件（每次都重新綁定，確保課程資訊正確）
+  const backBtn = document.getElementById('e3-helper-back-to-list');
+  if (backBtn) {
+    // 移除舊的事件監聽器（如果有）
+    const newBackBtn = backBtn.cloneNode(true);
+    backBtn.parentNode.replaceChild(newBackBtn, backBtn);
+
+    // 綁定新的事件
+    newBackBtn.addEventListener('click', () => {
+      if (courseListArea) courseListArea.style.display = 'block';
+      if (courseDetailArea) courseDetailArea.style.display = 'none';
+    });
+  }
+
+  // 綁定功能 tab 切換事件（每次都重新綁定，確保課程資訊正確）
+  document.querySelectorAll('.e3-helper-course-function-tab').forEach(tab => {
+    // 移除舊的事件監聽器
+    const newTab = tab.cloneNode(true);
+    tab.parentNode.replaceChild(newTab, tab);
+
+    // 綁定新的事件
+    newTab.addEventListener('click', () => {
+      // 更新 tab 樣式
+      document.querySelectorAll('.e3-helper-course-function-tab').forEach(t => {
+        if (t.classList) t.classList.remove('active');
+        if (t.style) t.style.borderBottom = '2px solid transparent';
+      });
+
+      if (newTab.classList) newTab.classList.add('active');
+      if (newTab.style) newTab.style.borderBottom = '2px solid #667eea';
+
+      // 切換內容
+      const functionType = newTab.dataset.function;
+      const statsContent = document.getElementById('e3-helper-course-stats-content');
+      const gradesContent = document.getElementById('e3-helper-course-grades-content');
+
+      if (functionType === 'stats') {
+        if (statsContent) statsContent.style.display = 'block';
+        if (gradesContent) gradesContent.style.display = 'none';
+        showCourseStats(course);
+      } else if (functionType === 'grades') {
+        if (statsContent) statsContent.style.display = 'none';
+        if (gradesContent) gradesContent.style.display = 'block';
+        loadCourseGrades(course.id);
+      }
+    });
+  });
+}
+
+// 顯示課程統計資訊
+async function showCourseStats(course) {
+  console.log('E3 Helper: 顯示課程統計:', course.fullname);
+
+  const statsContent = document.getElementById('e3-helper-course-stats-content');
+  if (!statsContent) return;
+
+  statsContent.innerHTML = '<div class="e3-helper-loading">載入統計資料中...</div>';
+
+  try {
+    // 獲取課程統計資料
+    const storage = await chrome.storage.local.get(['participantCounts', 'participantChangeNotifications']);
+    const participantCounts = storage.participantCounts || {};
+    const participantNotifications = storage.participantChangeNotifications || [];
+
+    const participantData = participantCounts[course.id];
+    const courseChanges = participantNotifications.filter(n => n.courseId === course.id).slice(0, 10);
+
+    // 生成統計 HTML
+    let statsHTML = `
+      <div style="padding: 16px;">
+        <!-- 基本資訊 -->
+        <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 8px; padding: 16px; margin-bottom: 16px;">
+          <div style="font-size: 12px; opacity: 0.9; margin-bottom: 8px;">課程基本資訊</div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <div>
+              <div style="font-size: 11px; opacity: 0.8;">課程代碼</div>
+              <div style="font-size: 16px; font-weight: 600; margin-top: 4px;">${course.id}</div>
+            </div>
+            <div>
+              <div style="font-size: 11px; opacity: 0.8;">目前人數</div>
+              <div style="font-size: 16px; font-weight: 600; margin-top: 4px;">${participantData ? participantData.count : '未檢測'} 人</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 成員變動歷史 -->
+        <div style="margin-bottom: 16px;">
+          <div style="font-size: 13px; font-weight: 600; color: #495057; margin-bottom: 8px;">📊 成員變動歷史</div>
+    `;
+
+    if (courseChanges.length > 0) {
+      statsHTML += `
+        <div style="background: #f8f9fa; border-radius: 8px; padding: 12px;">
+      `;
+
+      courseChanges.forEach(change => {
+        const timeAgo = getTimeAgoText(change.timestamp);
+        const diffText = change.diff > 0 ? `<span style="color: #28a745;">+${change.diff}</span>` : `<span style="color: #dc3545;">${change.diff}</span>`;
+
+        statsHTML += `
+          <div style="padding: 8px 0; border-bottom: 1px solid #dee2e6; last-child:border-bottom: none;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <span style="font-size: 12px; color: #495057;">${change.oldCount} → ${change.newCount}</span>
+                <span style="font-size: 12px; margin-left: 8px;">(${diffText} 人)</span>
+              </div>
+              <span style="font-size: 11px; color: #6c757d;">${timeAgo}</span>
+            </div>
+          </div>
+        `;
+      });
+
+      statsHTML += `
+        </div>
+      `;
+    } else {
+      statsHTML += `
+        <div style="background: #f8f9fa; border-radius: 8px; padding: 16px; text-align: center; color: #6c757d; font-size: 12px;">
+          尚無成員變動記錄
+        </div>
+      `;
+    }
+
+    statsHTML += `
+        </div>
+
+        <!-- 成員列表區域 -->
+        <div style="margin-bottom: 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <div style="font-size: 13px; font-weight: 600; color: #495057;">👥 成員列表</div>
+            <button id="e3-helper-show-members-btn" data-course-id="${course.id}"
+                    style="background: #667eea; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 11px;">
+              顯示成員
+            </button>
+          </div>
+          <div id="e3-helper-members-container" style="display: none;">
+            <div class="e3-helper-loading">載入成員中...</div>
+          </div>
+        </div>
+
+        <!-- 快速操作 -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <button onclick="window.open('https://e3p.nycu.edu.tw/course/view.php?id=${course.id}', '_blank')"
+                  style="background: white; border: 1px solid #dee2e6; color: #495057; padding: 10px; border-radius: 6px; cursor: pointer; font-size: 12px; transition: all 0.2s;"
+                  onmouseover="this.style.background='#f8f9fa'" onmouseout="this.style.background='white'">
+            📖 開啟課程頁面
+          </button>
+          <button onclick="window.open('https://e3p.nycu.edu.tw/user/index.php?id=${course.id}&scopec=1', '_blank')"
+                  style="background: white; border: 1px solid #dee2e6; color: #495057; padding: 10px; border-radius: 6px; cursor: pointer; font-size: 12px; transition: all 0.2s;"
+                  onmouseover="this.style.background='#f8f9fa'" onmouseout="this.style.background='white'">
+            👥 在新分頁查看
+          </button>
+        </div>
+      </div>
+    `;
+
+    statsContent.innerHTML = statsHTML;
+
+    // 綁定顯示成員按鈕事件
+    const showMembersBtn = document.getElementById('e3-helper-show-members-btn');
+    if (showMembersBtn) {
+      showMembersBtn.addEventListener('click', async () => {
+        const membersContainer = document.getElementById('e3-helper-members-container');
+
+        if (membersContainer.style.display === 'none') {
+          membersContainer.style.display = 'block';
+          showMembersBtn.textContent = '隱藏成員';
+
+          // 載入成員列表
+          await loadCourseMembers(course.id, course.fullname);
+        } else {
+          membersContainer.style.display = 'none';
+          showMembersBtn.textContent = '顯示成員';
+        }
+      });
+    }
+
+  } catch (error) {
+    console.error('E3 Helper: 載入課程統計失敗:', error);
+    statsContent.innerHTML = `
+      <div style="padding: 16px; text-align: center; color: #dc3545;">
+        載入失敗<br>
+        <small style="color: #6c757d;">${error.message}</small>
+      </div>
+    `;
+  }
+}
+
+// 載入課程成員列表
+async function loadCourseMembers(courseId, courseName) {
+  console.log('E3 Helper: 載入課程成員:', courseName);
+
+  const membersContainer = document.getElementById('e3-helper-members-container');
+  if (!membersContainer) return;
+
+  membersContainer.innerHTML = '<div class="e3-helper-loading">載入成員中...</div>';
+
+  try {
+    // 獲取成員頁面（使用 perpage=5000 來獲取所有成員，避免分頁問題）
+    const participantsUrl = `https://e3p.nycu.edu.tw/user/index.php?id=${courseId}&scopec=1&perpage=5000`;
+    const response = await fetch(participantsUrl, { credentials: 'include' });
+    const html = await response.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+
+    // 解析成員列表 - 方法1: 從表格行解析
+    const members = [];
+    const memberRows = doc.querySelectorAll('tbody tr');
+
+    memberRows.forEach(row => {
+      // E3 的成員表格使用 th 而不是 td 作為第一欄
+      const nameCell = row.querySelector('th.cell.c1, td.cell.c1');
+      const roleCell = row.querySelector('th.cell.c2, td.cell.c2');
+      const emailCell = row.querySelector('th.cell.c3, td.cell.c3');
+
+      if (nameCell) {
+        const nameLink = nameCell.querySelector('a[href*="/user/view.php"]');
+        if (nameLink) {
+          // 提取姓名（移除前面的大頭照 alt 文字）
+          let name = nameLink.textContent.trim();
+          // 移除可能的換行和多餘空白
+          name = name.replace(/\s+/g, ' ').trim();
+
+          const role = roleCell ? roleCell.textContent.trim() : '學生';
+          const email = emailCell ? emailCell.textContent.trim() : '';
+
+          // 排除 role 為 "No roles" 的成員（退課學生）
+          // 注意：E3 顯示的是 "No roles"（首字母大寫，有空格）
+          if (name && role !== 'No roles') {
+            members.push({ name, role, email });
+          }
+        }
+      }
+    });
+
+    console.log(`E3 Helper: 方法1 找到 ${members.length} 位成員`);
+
+    // 如果沒找到成員，嘗試直接從所有用戶連結解析
+    if (members.length === 0) {
+      console.log('E3 Helper: 未找到成員（方法1），嘗試方法2...');
+
+      // 方法2：直接找所有用戶連結
+      const userLinks = doc.querySelectorAll('a[href*="/user/view.php"]');
+      userLinks.forEach(link => {
+        let name = link.textContent.trim();
+        // 移除可能的換行和多餘空白
+        name = name.replace(/\s+/g, ' ').trim();
+
+        if (name && !name.includes('img')) {
+          // 嘗試從父元素的兄弟元素找角色
+          const parentRow = link.closest('tr');
+          let role = '學生';
+          let email = '';
+
+          if (parentRow) {
+            const cells = parentRow.querySelectorAll('td, th');
+            if (cells.length > 2) {
+              role = cells[2]?.textContent.trim() || '學生';
+            }
+            if (cells.length > 3) {
+              email = cells[3]?.textContent.trim() || '';
+            }
+          }
+
+          // 排除 role 為 "No roles" 的成員（退課學生）
+          if (role !== 'No roles') {
+            members.push({ name, role, email });
+          }
+        }
+      });
+    }
+
+    console.log(`E3 Helper: 找到 ${members.length} 位成員`);
+
+    // 顯示成員列表
+    if (members.length > 0) {
+      let membersHTML = `
+        <div style="background: #f8f9fa; border-radius: 8px; padding: 12px; max-height: 400px; overflow-y: auto;">
+      `;
+
+      // 按角色分組
+      const roleGroups = {};
+      members.forEach(member => {
+        const role = member.role || '學生';
+        if (!roleGroups[role]) {
+          roleGroups[role] = [];
+        }
+        roleGroups[role].push(member);
+      });
+
+      // 顯示每個角色組
+      Object.keys(roleGroups).sort().forEach(role => {
+        membersHTML += `
+          <div style="margin-bottom: 16px;">
+            <div style="font-size: 11px; font-weight: 600; color: #6c757d; margin-bottom: 8px; text-transform: uppercase;">
+              ${role} (${roleGroups[role].length})
+            </div>
+        `;
+
+        roleGroups[role].forEach(member => {
+          membersHTML += `
+            <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px; background: white; border-radius: 4px; margin-bottom: 6px; border: 1px solid #dee2e6;">
+              <div>
+                <div style="font-size: 12px; color: #495057; font-weight: 500;">${member.name}</div>
+                ${member.email ? `<div style="font-size: 10px; color: #6c757d; margin-top: 2px;">${member.email}</div>` : ''}
+              </div>
+            </div>
+          `;
+        });
+
+        membersHTML += `</div>`;
+      });
+
+      membersHTML += `</div>`;
+      membersContainer.innerHTML = membersHTML;
+    } else {
+      membersContainer.innerHTML = `
+        <div style="background: #f8f9fa; border-radius: 8px; padding: 16px; text-align: center; color: #6c757d; font-size: 12px;">
+          無法載入成員列表<br>
+          <small style="margin-top: 4px; display: block;">請點擊「在新分頁查看」按鈕在 E3 網站上查看</small>
+        </div>
+      `;
+    }
+
+  } catch (error) {
+    console.error('E3 Helper: 載入成員列表失敗:', error);
+    membersContainer.innerHTML = `
+      <div style="background: #f8f9fa; border-radius: 8px; padding: 16px; text-align: center; color: #dc3545; font-size: 12px;">
+        載入失敗<br>
+        <small style="color: #6c757d; margin-top: 4px; display: block;">${error.message}</small>
+      </div>
+    `;
+  }
+}
+
 // 顯示課程成績列表
 async function displayCourseGradeList() {
   const statsContainer = document.querySelector('.e3-helper-grade-stats');
@@ -2236,7 +4518,7 @@ function showCourseGradeDetails(courseId) {
   }
 }
 
-// ==================== 教材下載功能 ====================
+// ==================== 檔案下載功能（教材、影片、公告）====================
 
 // 載入課程選擇器
 async function loadCourseSelector() {
@@ -2389,6 +4671,226 @@ async function loadAnnouncements() {
   await chrome.storage.local.set({ announcements: allAnnouncements });
 
   console.log(`E3 Helper: 公告載入完成，共 ${allAnnouncements.length} 個`);
+}
+
+// 載入通知列表
+async function loadNotifications() {
+  console.log('E3 Helper: 開始載入通知...');
+
+  const notificationListElement = document.getElementById('e3-helper-notification-list');
+  if (!notificationListElement) return;
+
+  // 從 storage 獲取通知（包括作業通知、成員變動通知和緊急作業通知）
+  const storage = await chrome.storage.local.get(['notifications', 'participantChangeNotifications', 'urgentAssignmentNotifications']);
+  const assignmentNotifications = storage.notifications || [];
+  const participantNotifications = storage.participantChangeNotifications || [];
+  const urgentNotifications = storage.urgentAssignmentNotifications || [];
+
+  // 合併所有通知
+  const allNotifications = [...assignmentNotifications, ...participantNotifications, ...urgentNotifications];
+
+  if (allNotifications.length === 0) {
+    notificationListElement.innerHTML = `
+      <div class="e3-helper-welcome-message">
+        <h3>🔔 目前沒有通知</h3>
+        <p>當有新作業上架或課程成員變動時，這裡會顯示通知。</p>
+      </div>
+    `;
+    return;
+  }
+
+  // 按時間排序（最新的在前）
+  allNotifications.sort((a, b) => b.timestamp - a.timestamp);
+
+  // 生成通知列表 HTML
+  const notificationHTML = allNotifications.map(notification => {
+    const timeAgo = getTimeAgoText(notification.timestamp);
+    const isUnread = !notification.read;
+    const unreadBadge = isUnread ? '<span style="display: inline-block; width: 8px; height: 8px; background: #dc3545; border-radius: 50%; margin-right: 6px;"></span>' : '';
+
+    let icon = '📝';
+    let typeText = '新作業';
+    let title = notification.title || '';
+    let message = notification.message || '';
+    let url = notification.url || '';
+
+    if (notification.type === 'urgent') {
+      icon = '🚨';
+      typeText = '緊急作業';
+    } else if (notification.type === 'deadline') {
+      icon = '⏰';
+      typeText = '截止提醒';
+    } else if (notification.type === 'announcement') {
+      icon = '📢';
+      typeText = '公告';
+    } else if (notification.type === 'participant-change') {
+      icon = '📊';
+      typeText = '成員變動';
+      const changeText = notification.diff > 0 ? `增加 ${notification.diff} 人` : `減少 ${Math.abs(notification.diff)} 人`;
+      title = notification.courseName;
+      message = `${changeText} (${notification.oldCount} → ${notification.newCount})`;
+      url = `https://e3p.nycu.edu.tw/user/index.php?id=${notification.courseId}&scopec=1`;
+    }
+
+    return `
+      <div class="e3-helper-assignment-item ${isUnread ? 'unread' : ''}"
+           style="cursor: pointer; opacity: ${isUnread ? '1' : '0.7'};"
+           data-notification-id="${notification.id}"
+           data-notification-type="${notification.type || 'assignment'}"
+           data-url="${url}">
+        <div style="display: flex; align-items: center; margin-bottom: 4px;">
+          ${unreadBadge}
+          <span style="font-size: 12px;">${icon} ${typeText}</span>
+          <span style="margin-left: auto; font-size: 11px; color: #999;">${timeAgo}</span>
+        </div>
+        <div style="font-weight: ${isUnread ? '600' : '400'}; margin-bottom: 4px;">
+          ${title}
+        </div>
+        <div style="font-size: 12px; color: #666;">
+          ${message}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  notificationListElement.innerHTML = notificationHTML;
+
+  // 綁定點擊事件
+  notificationListElement.querySelectorAll('.e3-helper-assignment-item').forEach(item => {
+    item.addEventListener('click', async () => {
+      const notificationId = item.dataset.notificationId;
+      const notificationType = item.dataset.notificationType;
+      const url = item.dataset.url;
+
+      // 標記為已讀（根據類型選擇正確的 storage key）
+      if (notificationType === 'participant-change') {
+        const storage = await chrome.storage.local.get(['participantChangeNotifications']);
+        const notifications = storage.participantChangeNotifications || [];
+        const notification = notifications.find(n => n.id === notificationId);
+        if (notification) {
+          notification.read = true;
+          await chrome.storage.local.set({ participantChangeNotifications: notifications });
+          await updateNotificationBadge();
+        }
+      } else if (notificationType === 'urgent') {
+        const storage = await chrome.storage.local.get(['urgentAssignmentNotifications']);
+        const notifications = storage.urgentAssignmentNotifications || [];
+        const notification = notifications.find(n => n.id === notificationId);
+        if (notification) {
+          notification.read = true;
+          await chrome.storage.local.set({ urgentAssignmentNotifications: notifications });
+          await updateNotificationBadge();
+        }
+      } else {
+        const storage = await chrome.storage.local.get(['notifications']);
+        const notifications = storage.notifications || [];
+        const notification = notifications.find(n => n.id === notificationId);
+        if (notification) {
+          notification.read = true;
+          await chrome.storage.local.set({ notifications });
+          await updateNotificationBadge();
+        }
+      }
+
+      // 如果有 URL，打開連結
+      if (url) {
+        window.open(url, '_blank');
+      }
+    });
+  });
+
+  console.log(`E3 Helper: 通知載入完成，共 ${allNotifications.length} 個（作業: ${assignmentNotifications.length}, 成員變動: ${participantNotifications.length}, 緊急: ${urgentNotifications.length}）`);
+}
+
+// 標記所有通知為已讀
+async function markAllNotificationsAsRead() {
+  const storage = await chrome.storage.local.get(['notifications', 'participantChangeNotifications', 'urgentAssignmentNotifications']);
+  const assignmentNotifications = storage.notifications || [];
+  const participantNotifications = storage.participantChangeNotifications || [];
+  const urgentNotifications = storage.urgentAssignmentNotifications || [];
+
+  // 標記所有通知為已讀
+  assignmentNotifications.forEach(notification => {
+    notification.read = true;
+  });
+  participantNotifications.forEach(notification => {
+    notification.read = true;
+  });
+  urgentNotifications.forEach(notification => {
+    notification.read = true;
+  });
+
+  await chrome.storage.local.set({
+    notifications: assignmentNotifications,
+    participantChangeNotifications: participantNotifications,
+    urgentAssignmentNotifications: urgentNotifications
+  });
+
+  // 更新 badge 顯示
+  await updateNotificationBadge();
+
+  console.log('E3 Helper: 所有通知已標記為已讀');
+}
+
+// 更新通知 badge 計數
+async function updateNotificationBadge() {
+  const storage = await chrome.storage.local.get(['notifications', 'participantChangeNotifications', 'urgentAssignmentNotifications']);
+  const assignmentNotifications = storage.notifications || [];
+  const participantNotifications = storage.participantChangeNotifications || [];
+  const urgentNotifications = storage.urgentAssignmentNotifications || [];
+
+  // 計算未讀通知數量（合併所有類型的通知）
+  const unreadCount = assignmentNotifications.filter(n => !n.read).length +
+                      participantNotifications.filter(n => !n.read).length +
+                      urgentNotifications.filter(n => !n.read).length;
+
+  // 更新側欄 badge
+  const badge = document.getElementById('e3-helper-notification-badge');
+  if (badge) {
+    if (unreadCount > 0) {
+      badge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
+      badge.style.display = 'block';
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+
+  // 更新浮動按鈕 badge
+  const toggleBadge = document.getElementById('e3-helper-toggle-badge');
+  if (toggleBadge) {
+    if (unreadCount > 0) {
+      toggleBadge.textContent = unreadCount > 99 ? '99+' : unreadCount.toString();
+      toggleBadge.style.display = 'flex';
+    } else {
+      toggleBadge.style.display = 'none';
+    }
+  }
+
+  // 通知 background script 更新擴充功能圖標 badge
+  chrome.runtime.sendMessage({
+    action: 'updateBadge',
+    count: unreadCount
+  }).catch(err => {
+    console.log('E3 Helper: 無法與 background script 通訊（可能正在重新載入）');
+  });
+}
+
+// 輔助函數：計算時間差文字
+function getTimeAgoText(timestamp) {
+  const now = Date.now();
+  const diff = now - timestamp;
+
+  const minutes = Math.floor(diff / (1000 * 60));
+  const hours = Math.floor(diff / (1000 * 60 * 60));
+  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+
+  if (minutes < 1) return '剛剛';
+  if (minutes < 60) return `${minutes} 分鐘前`;
+  if (hours < 24) return `${hours} 小時前`;
+  if (days < 7) return `${days} 天前`;
+
+  const date = new Date(timestamp);
+  return `${date.getMonth() + 1}/${date.getDate()}`;
 }
 
 // 載入信件
@@ -2759,6 +5261,215 @@ async function fetchForumDiscussions(forumId, courseId, courseName, forumName) {
   }
 }
 
+// ==================== 課程成員檢測功能 ====================
+
+// 獲取課程參與者數量
+async function fetchCourseParticipants(courseId, courseName) {
+  try {
+    // 使用 perpage=5000 來確保獲取所有成員的總數
+    const participantsUrl = `https://e3p.nycu.edu.tw/user/index.php?id=${courseId}&scopec=1&perpage=5000`;
+
+    const response = await fetch(participantsUrl, {
+      credentials: 'include'
+    });
+
+    if (!response.ok) {
+      console.warn(`E3 Helper: 無法訪問課程 ${courseId} 成員頁面: HTTP ${response.status}`);
+      return null;
+    }
+
+    const html = await response.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+
+    // 實際計算成員數量，排除 role 為 "No roles" 的成員（退課學生）
+    let participantCount = 0;
+    const memberRows = doc.querySelectorAll('tbody tr');
+
+    memberRows.forEach(row => {
+      const roleCell = row.querySelector('th.cell.c2, td.cell.c2');
+      if (roleCell) {
+        const role = roleCell.textContent.trim();
+        // 排除 "No roles" 的成員（表示已退課）
+        // 注意：E3 顯示的是 "No roles"（首字母大寫，有空格）
+        if (role && role !== 'No roles') {
+          participantCount++;
+        }
+      }
+    });
+
+    console.log(`E3 Helper: 實際計算成員數量: ${participantCount} (已排除 No roles)`);
+
+    // 如果無法從表格解析，回退到其他方法
+    if (participantCount === 0) {
+      // 方法 1: 從 data-table-total-rows 屬性直接讀取
+      const tableContainer = doc.querySelector('[data-table-total-rows]');
+      if (tableContainer) {
+        const totalRows = tableContainer.getAttribute('data-table-total-rows');
+        if (totalRows) {
+          participantCount = parseInt(totalRows, 10);
+          console.log(`E3 Helper: 從 data-table-total-rows 讀取: ${participantCount} (警告: 可能包含退課學生)`);
+        }
+      }
+
+      // 方法 2: 從「找到 X 位參與者」文字解析
+      if (participantCount === 0) {
+        const participantCountEl = doc.querySelector('[data-region="participant-count"]');
+        if (participantCountEl) {
+          const text = participantCountEl.textContent.trim();
+          const match = text.match(/(\d+)/);
+          if (match) {
+            participantCount = parseInt(match[1], 10);
+            console.log(`E3 Helper: 從參與者文字解析: ${participantCount} (警告: 可能包含退課學生)`);
+          }
+        }
+      }
+
+      // 方法 3: 從「選擇所有X個使用者」按鈕文字解析
+      if (participantCount === 0) {
+        const checkAllBtn = doc.querySelector('#checkall');
+        if (checkAllBtn) {
+          const value = checkAllBtn.value || checkAllBtn.textContent;
+          const match = value.match(/(\d+)/);
+          if (match) {
+            participantCount = parseInt(match[1], 10);
+            console.log(`E3 Helper: 從全選按鈕解析: ${participantCount} (警告: 可能包含退課學生)`);
+          }
+        }
+      }
+    }
+
+    if (participantCount > 0) {
+      console.log(`E3 Helper: ✓ 課程 ${courseName} (ID: ${courseId}) 目前有 ${participantCount} 位參與者`);
+      return {
+        courseId,
+        courseName,
+        count: participantCount,
+        timestamp: Date.now()
+      };
+    }
+
+    console.warn(`E3 Helper: ✗ 無法解析課程 ${courseId} 的參與者數量`);
+    return null;
+
+  } catch (error) {
+    console.error(`E3 Helper: 獲取課程 ${courseId} 參與者時發生錯誤:`, error);
+    return null;
+  }
+}
+
+// 檢查所有課程的成員變動
+async function checkAllCoursesParticipants() {
+  console.log('E3 Helper: 開始檢查課程成員變動...');
+
+  try {
+    // 載入課程列表
+    const storage = await chrome.storage.local.get(['courses', 'participantCounts']);
+    const courses = storage.courses || [];
+    const oldCounts = storage.participantCounts || {};
+
+    if (courses.length === 0) {
+      console.log('E3 Helper: 沒有課程資料，跳過成員檢測');
+      return;
+    }
+
+    const newCounts = {};
+    const changes = [];
+
+    // 逐個檢查課程
+    for (const course of courses) {
+      const result = await fetchCourseParticipants(course.id, course.fullname);
+
+      if (result) {
+        newCounts[course.id] = result;
+
+        // 檢查是否有變動
+        const oldData = oldCounts[course.id];
+        if (oldData && oldData.count !== result.count) {
+          const diff = result.count - oldData.count;
+          changes.push({
+            courseId: course.id,
+            courseName: course.fullname,
+            oldCount: oldData.count,
+            newCount: result.count,
+            diff: diff,
+            timestamp: Date.now()
+          });
+          console.log(`E3 Helper: 偵測到變動 - ${course.fullname}: ${oldData.count} → ${result.count} (${diff > 0 ? '+' : ''}${diff})`);
+        }
+      }
+
+      // 避免請求過快，每個請求間隔 500ms
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+
+    // 儲存新的數量和檢測時間
+    await chrome.storage.local.set({
+      participantCounts: newCounts,
+      lastParticipantCheckTime: Date.now()
+    });
+
+    // 如果有變動，發送通知並儲存到通知中心
+    if (changes.length > 0) {
+      await saveParticipantChangeNotifications(changes);
+      await updateNotificationBadge();
+
+      // 發送桌面通知
+      for (const change of changes) {
+        const changeText = change.diff > 0 ? `增加 ${change.diff} 人` : `減少 ${Math.abs(change.diff)} 人`;
+        chrome.runtime.sendMessage({
+          action: 'showNotification',
+          title: `📊 課程成員變動`,
+          message: `${change.courseName}\n${changeText} (${change.oldCount} → ${change.newCount})`
+        });
+      }
+    }
+
+    console.log(`E3 Helper: 成員檢測完成，檢查了 ${courses.length} 個課程，發現 ${changes.length} 個變動`);
+
+    // 更新顯示的檢測時間
+    updateLastCheckTimeDisplay();
+
+    return changes;
+
+  } catch (error) {
+    console.error('E3 Helper: 檢查課程成員時發生錯誤:', error);
+    return [];
+  }
+}
+
+// 儲存成員變動通知
+async function saveParticipantChangeNotifications(changes) {
+  try {
+    const storage = await chrome.storage.local.get(['participantChangeNotifications']);
+    const notifications = storage.participantChangeNotifications || [];
+
+    // 加入新的變動通知
+    for (const change of changes) {
+      notifications.push({
+        id: `participant-${change.courseId}-${change.timestamp}`,
+        type: 'participant-change',
+        courseId: change.courseId,
+        courseName: change.courseName,
+        oldCount: change.oldCount,
+        newCount: change.newCount,
+        diff: change.diff,
+        timestamp: change.timestamp,
+        read: false
+      });
+    }
+
+    // 只保留最近 100 條通知
+    const recentNotifications = notifications.slice(-100);
+
+    await chrome.storage.local.set({ participantChangeNotifications: recentNotifications });
+    console.log(`E3 Helper: 已儲存 ${changes.length} 個成員變動通知`);
+
+  } catch (error) {
+    console.error('E3 Helper: 儲存成員變動通知時發生錯誤:', error);
+  }
+}
+
 // 顯示公告與信件列表
 async function displayAnnouncements() {
   const announcementList = document.querySelector('.e3-helper-content[data-content="announcements"] .e3-helper-assignment-list');
@@ -2879,8 +5590,9 @@ async function displayAnnouncements() {
 
       return `
         <div class="e3-helper-announcement-item ${isRead ? 'read' : 'unread'}" data-item-id="${item.id}" data-item-type="${item.type}">
+          ${isRead ? '' : '<div class="e3-helper-unread-dot"></div>'}
           <div class="e3-helper-announcement-title">
-            ${isRead ? '' : '<span style="color: #e74c3c; margin-right: 4px; font-weight: bold;">●</span>'}${typeIcon} ${item.title}
+            ${typeIcon} ${item.title}
           </div>
           <div class="e3-helper-announcement-meta">
             <span>${typeLabel}: ${item.courseName.substring(0, 30)}${item.courseName.length > 30 ? '...' : ''}</span>
@@ -3000,6 +5712,260 @@ function bindAnnouncementEvents(renderCallback) {
   });
 }
 
+// 翻譯文字（使用 Gemini AI 或 Google Translate 免費 API）
+async function translateText(text, sourceLang, targetLang) {
+  try {
+    console.log(`E3 Helper: 翻譯文字，從 ${sourceLang} 到 ${targetLang}`);
+
+    // 檢查是否啟用 AI
+    const storage = await chrome.storage.local.get(['aiSettings']);
+    const aiSettings = storage.aiSettings || { enabled: false };
+
+    if (aiSettings.enabled && aiSettings.geminiApiKey) {
+      // 使用 Gemini API 翻譯
+      console.log('E3 Helper: 使用 Gemini AI 翻譯');
+      return await translateWithGemini(text, sourceLang, targetLang, aiSettings.geminiApiKey);
+    } else {
+      // 使用 Google Translate 免費服務
+      console.log('E3 Helper: 使用 Google Translate 免費服務');
+      return await translateWithGoogleFree(text, sourceLang, targetLang);
+    }
+
+  } catch (error) {
+    console.error('E3 Helper: 翻譯失敗', error);
+    throw new Error('翻譯失敗，請稍後再試');
+  }
+}
+
+// 使用 Gemini API 翻譯
+async function translateWithGemini(text, sourceLang, targetLang, apiKey) {
+  const langMap = {
+    'zh-CN': 'Traditional Chinese (Taiwan)',
+    'zh-TW': 'Traditional Chinese (Taiwan)',
+    'en': 'English'
+  };
+
+  const targetLanguage = langMap[targetLang] || targetLang;
+
+  const prompt = `Translate the following text to ${targetLanguage}. IMPORTANT: Preserve all line breaks, paragraph structure, and formatting. Only translate the text content, do not add any explanations or notes.\n\n${text}`;
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: prompt
+            }]
+          }],
+          generationConfig: {
+            temperature: 0.1,
+            maxOutputTokens: 2048,
+            thinkingConfig: {
+              thinkingBudget: 0
+            }
+          }
+        })
+      }
+    );
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('E3 Helper: Gemini API 錯誤詳情', errorData);
+      throw new Error(`Gemini API 錯誤: ${errorData.error?.message || response.status}`);
+    }
+
+    const data = await response.json();
+    console.log('E3 Helper: Gemini 翻譯 API 完整回應', data);
+
+    // 檢查回應結構
+    if (!data.candidates || data.candidates.length === 0) {
+      console.error('E3 Helper: Gemini API 無 candidates', data);
+      if (data.promptFeedback?.blockReason) {
+        throw new Error(`內容被過濾: ${data.promptFeedback.blockReason}`);
+      }
+      throw new Error('Gemini API 返回空結果');
+    }
+
+    const candidate = data.candidates[0];
+
+    if (!candidate.content || !candidate.content.parts || candidate.content.parts.length === 0) {
+      console.error('E3 Helper: Gemini API candidate 無內容', candidate);
+      if (candidate.finishReason) {
+        throw new Error(`生成終止: ${candidate.finishReason}`);
+      }
+      throw new Error('Gemini API 返回格式錯誤');
+    }
+
+    const translatedText = candidate.content.parts[0].text.trim();
+    console.log('E3 Helper: Gemini AI 翻譯完成');
+    return translatedText;
+
+  } catch (error) {
+    console.error('E3 Helper: Gemini AI 翻譯失敗', error);
+    throw error;
+  }
+}
+
+// 翻譯 HTML 內容（保留連結和附件）
+async function translateHTMLContent(container, sourceLang, targetLang) {
+  // 創建臨時容器解析HTML
+  const tempDiv = document.createElement('div');
+  tempDiv.innerHTML = container.innerHTML;
+
+  // 提取所有需要翻譯的文字節點
+  const textNodes = [];
+  const textContents = [];
+
+  function extractTextNodes(node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent.trim();
+      if (text && text.length > 0) {
+        textNodes.push(node);
+        textContents.push(text);
+      }
+    } else if (node.nodeType === Node.ELEMENT_NODE) {
+      // 跳過不需要翻譯的元素
+      if (node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'CODE') {
+        return;
+      }
+      // 遞歸處理子節點
+      for (let child of node.childNodes) {
+        extractTextNodes(child);
+      }
+    }
+  }
+
+  extractTextNodes(tempDiv);
+
+  if (textContents.length === 0) {
+    return container.innerHTML;
+  }
+
+  console.log(`E3 Helper: 找到 ${textContents.length} 個文字節點需要翻譯`);
+
+  // 合併所有文字內容，用特殊分隔符分隔
+  const delimiter = '\n<<<SEPARATOR>>>\n';
+  const combinedText = textContents.join(delimiter);
+
+  try {
+    // 一次性翻譯所有文字
+    const translatedCombined = await translateText(combinedText, sourceLang, targetLang);
+
+    // 分割翻譯結果
+    const translatedTexts = translatedCombined.split(delimiter);
+
+    // 將翻譯結果放回對應的文字節點
+    for (let i = 0; i < textNodes.length && i < translatedTexts.length; i++) {
+      textNodes[i].textContent = translatedTexts[i].trim();
+    }
+
+    console.log('E3 Helper: 翻譯完成，HTML結構完整保留');
+    return tempDiv.innerHTML;
+
+  } catch (error) {
+    console.error('E3 Helper: 翻譯失敗', error);
+    throw error;
+  }
+}
+
+// 使用 Google Translate 免費服務翻譯
+async function translateWithGoogleFree(text, sourceLang, targetLang) {
+  const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sourceLang}&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`翻譯 API 錯誤: ${response.status}`);
+  }
+
+  const data = await response.json();
+
+  // Google Translate API 返回的格式: [[["translated text", "original text", null, null, 1]], ...]
+  if (!data || !data[0] || !Array.isArray(data[0])) {
+    throw new Error('翻譯 API 返回格式錯誤');
+  }
+
+  // 組合所有翻譯片段
+  const translatedText = data[0]
+    .filter(item => item && item[0])
+    .map(item => item[0])
+    .join('');
+
+  console.log('E3 Helper: Google Translate 翻譯完成');
+  return translatedText;
+}
+
+// 使用 Gemini API 生成摘要
+async function generateAISummary(text, apiKey) {
+  const prompt = `Summarize in 100 words or less (no markdown):\n${text}`;
+
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          contents: [{
+            parts: [{
+              text: prompt
+            }]
+          }],
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: 512
+          }
+        })
+      }
+    );
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('E3 Helper: Gemini API 錯誤詳情', errorData);
+      throw new Error(`Gemini API 錯誤: ${errorData.error?.message || response.status}`);
+    }
+
+    const data = await response.json();
+    console.log('E3 Helper: Gemini API 完整回應', data);
+
+    // 檢查回應結構
+    if (!data.candidates || data.candidates.length === 0) {
+      console.error('E3 Helper: Gemini API 無 candidates', data);
+      // 檢查是否被安全過濾
+      if (data.promptFeedback?.blockReason) {
+        throw new Error(`內容被過濾: ${data.promptFeedback.blockReason}`);
+      }
+      throw new Error('Gemini API 返回空結果');
+    }
+
+    const candidate = data.candidates[0];
+
+    // 檢查是否有內容
+    if (!candidate.content || !candidate.content.parts || candidate.content.parts.length === 0) {
+      console.error('E3 Helper: Gemini API candidate 無內容', candidate);
+      if (candidate.finishReason) {
+        throw new Error(`生成終止: ${candidate.finishReason}`);
+      }
+      throw new Error('Gemini API 返回格式錯誤');
+    }
+
+    const summary = candidate.content.parts[0].text.trim();
+    console.log('E3 Helper: Gemini AI 摘要完成');
+    return summary;
+
+  } catch (error) {
+    console.error('E3 Helper: Gemini AI 摘要失敗', error);
+    throw error;
+  }
+}
+
 // 顯示公告/信件詳細內容
 async function showAnnouncementDetails(itemId, itemType) {
   const announcementList = document.querySelector('.e3-helper-content[data-content="announcements"] .e3-helper-assignment-list');
@@ -3045,6 +6011,23 @@ async function showAnnouncementDetails(itemId, itemType) {
         </div>
       </div>
       <div style="padding: 12px; background: #f8f9fa; border-radius: 6px; border-left: 3px solid #667eea;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <div style="font-size: 12px; color: #6c757d; font-weight: 600;">📄 內容</div>
+          <div style="display: flex; gap: 6px;">
+            <button id="e3-helper-ai-summary-btn" data-item-id="${item.id}" style="background: #9c27b0; border: none; color: white; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; transition: all 0.2s ease; display: none;">
+              🤖 AI摘要
+            </button>
+            <button id="e3-helper-translate-zh-btn" data-item-id="${item.id}" style="background: #4caf50; border: none; color: white; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; transition: all 0.2s ease; display: flex; align-items: center; gap: 4px;">
+              🌐 中→英
+            </button>
+            <button id="e3-helper-translate-en-btn" data-item-id="${item.id}" style="background: #2196f3; border: none; color: white; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; transition: all 0.2s ease; display: flex; align-items: center; gap: 4px;">
+              🌐 英→中
+            </button>
+            <button id="e3-helper-show-original-btn" data-item-id="${item.id}" style="background: #ff9800; border: none; color: white; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 11px; transition: all 0.2s ease; display: none;">
+              📄 顯示原文
+            </button>
+          </div>
+        </div>
         <div id="e3-helper-item-content" style="color: #495057; font-size: 13px; line-height: 1.6;">
           <div class="e3-helper-loading" style="text-align: center; padding: 40px;">載入中...</div>
         </div>
@@ -3102,6 +6085,139 @@ async function showAnnouncementDetails(itemId, itemType) {
   const contentContainer = document.getElementById('e3-helper-item-content');
   if (contentContainer) {
     await loadItemPreview(itemId, itemType, item.url, contentContainer);
+  }
+
+  // 檢查是否啟用 AI，顯示 AI 摘要按鈕
+  const storage = await chrome.storage.local.get(['aiSettings']);
+  const aiSettings = storage.aiSettings || { enabled: false };
+  const aiSummaryBtn = document.getElementById('e3-helper-ai-summary-btn');
+  if (aiSettings.enabled && aiSettings.geminiApiKey && aiSummaryBtn) {
+    aiSummaryBtn.style.display = 'flex';
+  }
+
+  // 綁定翻譯和摘要按鈕事件
+  let originalContent = null; // 儲存原文
+  let currentTranslation = null; // 儲存當前翻譯
+
+  const translateZhBtn = document.getElementById('e3-helper-translate-zh-btn');
+  const translateEnBtn = document.getElementById('e3-helper-translate-en-btn');
+  const showOriginalBtn = document.getElementById('e3-helper-show-original-btn');
+
+  // AI 摘要按鈕事件
+  if (aiSummaryBtn) {
+    aiSummaryBtn.addEventListener('click', async () => {
+      if (!contentContainer) return;
+
+      // 儲存原文
+      if (!originalContent) {
+        originalContent = contentContainer.innerHTML;
+      }
+
+      // 顯示載入中
+      aiSummaryBtn.disabled = true;
+      aiSummaryBtn.innerHTML = '⏳ 摘要中...';
+
+      try {
+        const textContent = contentContainer.innerText || contentContainer.textContent;
+        const summary = await generateAISummary(textContent, aiSettings.geminiApiKey);
+
+        contentContainer.innerHTML = `<div style="white-space: pre-wrap; background: #f0f4ff; padding: 12px; border-radius: 6px; border-left: 3px solid #9c27b0;"><div style="font-weight: 600; color: #9c27b0; margin-bottom: 8px;">🤖 AI 摘要</div>${escapeHtml(summary)}</div>`;
+        currentTranslation = contentContainer.innerHTML;
+
+        // 顯示「顯示原文」按鈕
+        showOriginalBtn.style.display = 'flex';
+        aiSummaryBtn.innerHTML = '✅ 已摘要';
+
+        setTimeout(() => {
+          aiSummaryBtn.innerHTML = '🤖 AI摘要';
+        }, 2000);
+      } catch (error) {
+        console.error('E3 Helper: AI 摘要失敗', error);
+        alert('AI 摘要失敗：' + error.message);
+        aiSummaryBtn.innerHTML = '🤖 AI摘要';
+      } finally {
+        aiSummaryBtn.disabled = false;
+      }
+    });
+  }
+
+  if (translateZhBtn) {
+    translateZhBtn.addEventListener('click', async () => {
+      if (!contentContainer) return;
+
+      // 儲存原文
+      if (!originalContent) {
+        originalContent = contentContainer.innerHTML;
+      }
+
+      // 顯示載入中
+      translateZhBtn.disabled = true;
+      translateZhBtn.innerHTML = '⏳ 翻譯中...';
+
+      try {
+        const translatedHTML = await translateHTMLContent(contentContainer, 'zh-TW', 'en');
+        contentContainer.innerHTML = translatedHTML;
+        currentTranslation = contentContainer.innerHTML;
+
+        // 顯示「顯示原文」按鈕
+        showOriginalBtn.style.display = 'flex';
+        translateZhBtn.innerHTML = '✅ 已翻譯';
+
+        setTimeout(() => {
+          translateZhBtn.innerHTML = '🌐 中→英';
+        }, 2000);
+      } catch (error) {
+        console.error('E3 Helper: 翻譯失敗', error);
+        alert('翻譯失敗：' + error.message);
+        translateZhBtn.innerHTML = '🌐 中→英';
+      } finally {
+        translateZhBtn.disabled = false;
+      }
+    });
+  }
+
+  if (translateEnBtn) {
+    translateEnBtn.addEventListener('click', async () => {
+      if (!contentContainer) return;
+
+      // 儲存原文
+      if (!originalContent) {
+        originalContent = contentContainer.innerHTML;
+      }
+
+      // 顯示載入中
+      translateEnBtn.disabled = true;
+      translateEnBtn.innerHTML = '⏳ 翻譯中...';
+
+      try {
+        const translatedHTML = await translateHTMLContent(contentContainer, 'en', 'zh-TW');
+        contentContainer.innerHTML = translatedHTML;
+        currentTranslation = contentContainer.innerHTML;
+
+        // 顯示「顯示原文」按鈕
+        showOriginalBtn.style.display = 'flex';
+        translateEnBtn.innerHTML = '✅ 已翻譯';
+
+        setTimeout(() => {
+          translateEnBtn.innerHTML = '🌐 英→中';
+        }, 2000);
+      } catch (error) {
+        console.error('E3 Helper: 翻譯失敗', error);
+        alert('翻譯失敗：' + error.message);
+        translateEnBtn.innerHTML = '🌐 英→中';
+      } finally {
+        translateEnBtn.disabled = false;
+      }
+    });
+  }
+
+  if (showOriginalBtn) {
+    showOriginalBtn.addEventListener('click', () => {
+      if (!contentContainer || !originalContent) return;
+
+      contentContainer.innerHTML = originalContent;
+      showOriginalBtn.style.display = 'none';
+    });
   }
 
   // 標記為已讀（如果還沒讀過）
@@ -3296,7 +6412,7 @@ async function scanSelectedCourses() {
       if (downloadStatus) {
         downloadStatus.textContent = `正在掃描課程 ${scannedCourses + 1}/${selectedCourseList.length}: ${course.fullname}`;
       }
-      pdfListContainer.innerHTML = `<div class="e3-helper-loading">正在掃描課程 ${scannedCourses + 1}/${selectedCourseList.length}<br><small style="color: #999; margin-top: 8px; display: block;">${course.fullname}</small><br><small style="color: #667eea; margin-top: 4px; display: block;">已找到 ${totalPDFs} 個教材檔案</small></div>`;
+      pdfListContainer.innerHTML = `<div class="e3-helper-loading">正在掃描課程 ${scannedCourses + 1}/${selectedCourseList.length}<br><small style="color: #999; margin-top: 8px; display: block;">${course.fullname}</small><br><small style="color: #667eea; margin-top: 4px; display: block;">已找到 ${totalPDFs} 個檔案</small></div>`;
 
       const coursePDFs = await scanCourseDeep(course.id, course.fullname);
       totalPDFs += coursePDFs.length;
@@ -3331,7 +6447,168 @@ async function scanSelectedCourses() {
   }, 3000);
 }
 
-// 掃描當前頁面中的教材檔案
+// 掃描當前頁面中的檔案（教材、影片、公告）
+// 掃描內嵌影片（video 標籤和 iframe）
+// 可以傳入自訂的 document 物件（用於深度掃描）
+function scanEmbeddedVideos(courseName = '', documentObj = document) {
+  const videos = [];
+
+  // 1. 掃描 <video> 標籤
+  const videoElements = documentObj.querySelectorAll('video');
+  console.log(`E3 Helper: 找到 ${videoElements.length} 個 video 標籤`);
+
+  videoElements.forEach((video, index) => {
+    // 優先從 src 屬性獲取
+    if (video.src && video.src.trim() !== '') {
+      const videoUrl = video.src;
+      const filename = extractFilenameFromUrl(videoUrl) || `內嵌影片_${index + 1}`;
+      const fileType = getFileTypeInfo(videoUrl) || { ext: '.mp4', icon: '🎬', name: 'VIDEO' };
+
+      videos.push({
+        url: videoUrl,
+        filename: filename,
+        course: courseName,
+        fileType: fileType,
+        isEmbedded: true
+      });
+      console.log(`E3 Helper: 找到 video 標籤影片 - ${filename}: ${videoUrl}`);
+    }
+
+    // 從 <source> 子標籤獲取
+    const sources = video.querySelectorAll('source');
+    sources.forEach((source, sourceIndex) => {
+      if (source.src && source.src.trim() !== '') {
+        const videoUrl = source.src;
+        const filename = extractFilenameFromUrl(videoUrl) || `內嵌影片_${index + 1}_source_${sourceIndex + 1}`;
+        const fileType = getFileTypeInfo(videoUrl) || { ext: '.mp4', icon: '🎬', name: 'VIDEO' };
+
+        // 檢查是否已經加入過（避免重複）
+        if (!videos.find(v => v.url === videoUrl)) {
+          videos.push({
+            url: videoUrl,
+            filename: filename,
+            course: courseName,
+            fileType: fileType,
+            isEmbedded: true
+          });
+          console.log(`E3 Helper: 找到 source 標籤影片 - ${filename}: ${videoUrl}`);
+        }
+      }
+    });
+  });
+
+  // 2. 掃描 <iframe> 中的影片
+  const iframes = documentObj.querySelectorAll('iframe');
+  console.log(`E3 Helper: 找到 ${iframes.length} 個 iframe`);
+
+  iframes.forEach((iframe, index) => {
+    const src = iframe.src;
+    if (!src) return;
+
+    // 檢查是否是影片相關的 iframe
+    const isVideoIframe =
+      src.includes('youtube.com') ||
+      src.includes('youtu.be') ||
+      src.includes('vimeo.com') ||
+      src.includes('dailymotion.com') ||
+      src.includes('video') ||
+      src.includes('.mp4') ||
+      src.includes('.webm') ||
+      src.includes('.ogg');
+
+    if (isVideoIframe) {
+      // 嘗試提取影片標題
+      let title = iframe.title || iframe.getAttribute('aria-label') || `iframe影片_${index + 1}`;
+
+      // 對於 YouTube，嘗試從 URL 提取影片 ID
+      let videoUrl = src;
+      let filename = title;
+
+      if (src.includes('youtube.com') || src.includes('youtu.be')) {
+        const videoIdMatch = src.match(/(?:embed\/|v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+        if (videoIdMatch) {
+          const videoId = videoIdMatch[1];
+          filename = `YouTube_${videoId}_${title}`;
+          videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+        }
+      }
+
+      videos.push({
+        url: videoUrl,
+        filename: sanitizeFilename(filename),
+        course: courseName,
+        fileType: { ext: '', icon: '🎬', name: 'IFRAME_VIDEO' },
+        isEmbedded: true,
+        isIframe: true,
+        originalSrc: src
+      });
+      console.log(`E3 Helper: 找到 iframe 影片 - ${filename}: ${src}`);
+    }
+  });
+
+  // 3. 掃描 <embed> 標籤（較舊的嵌入方式）
+  const embeds = documentObj.querySelectorAll('embed[src*="video"], embed[type*="video"]');
+  console.log(`E3 Helper: 找到 ${embeds.length} 個 embed 標籤`);
+
+  embeds.forEach((embed, index) => {
+    const src = embed.src;
+    if (src && src.trim() !== '') {
+      const filename = extractFilenameFromUrl(src) || `embed影片_${index + 1}`;
+      const fileType = getFileTypeInfo(src) || { ext: '.mp4', icon: '🎬', name: 'VIDEO' };
+
+      videos.push({
+        url: src,
+        filename: filename,
+        course: courseName,
+        fileType: fileType,
+        isEmbedded: true
+      });
+      console.log(`E3 Helper: 找到 embed 影片 - ${filename}: ${src}`);
+    }
+  });
+
+  return videos;
+}
+
+// 從 URL 中提取檔名的輔助函數
+function extractFilenameFromUrl(url) {
+  try {
+    const urlObj = new URL(url);
+    const pathname = urlObj.pathname;
+    const filename = pathname.split('/').pop();
+
+    if (filename && filename.includes('.')) {
+      // 移除 URL 參數（? 之後的部分）
+      const cleanFilename = filename.split('?')[0];
+      // 解碼 URL 編碼的字元
+      const decodedFilename = decodeURIComponent(cleanFilename);
+      // 清理不合法的檔名字元
+      return sanitizeFilename(decodedFilename);
+    }
+
+    return null;
+  } catch (e) {
+    // 如果無法解析 URL，嘗試直接從字串中提取
+    const parts = url.split('/');
+    const lastPart = parts[parts.length - 1];
+    if (lastPart && lastPart.includes('.')) {
+      const cleanFilename = lastPart.split('?')[0];
+      const decodedFilename = decodeURIComponent(cleanFilename);
+      return sanitizeFilename(decodedFilename);
+    }
+    return null;
+  }
+}
+
+// 清理檔名的輔助函數
+function sanitizeFilename(filename) {
+  // 移除或替換不合法的檔名字元
+  return filename
+    .replace(/[<>:"/\\|?*]/g, '_')
+    .replace(/\s+/g, '_')
+    .substring(0, 200); // 限制檔名長度
+}
+
 async function scanCurrentPage() {
   const pdfListContainer = document.querySelector('.e3-helper-pdf-list');
   if (!pdfListContainer) return;
@@ -3340,18 +6617,44 @@ async function scanCurrentPage() {
   allPDFs = [];
   selectedPDFs.clear();
 
-  // 獲取當前課程名稱
+  // 獲取當前課程名稱和頁面 URL
   const currentCourseName = getCurrentCourseName();
+  const currentPageUrl = window.location.href;
 
   // 建立檔案類型選擇器
   const fileSelectors = SUPPORTED_FILE_TYPES.map(type =>
     `a[href$="${type.ext}"], a[href*="${type.ext}?"], a[href*="pluginfile.php"][href*="${type.ext}"]`
   ).join(', ');
 
-  // 掃描當前頁面的教材檔案連結
-  const fileLinks = document.querySelectorAll(fileSelectors);
+  // 方法1: 掃描所有 pluginfile.php 連結（這是 E3 主要的檔案來源）
+  const pluginfileLinks = document.querySelectorAll('a[href*="pluginfile.php"]');
+  console.log(`E3 Helper: 在當前頁面找到 ${pluginfileLinks.length} 個 pluginfile 連結`);
 
-  console.log(`E3 Helper: 在當前頁面找到 ${fileLinks.length} 個直接檔案連結`);
+  pluginfileLinks.forEach(link => {
+    const url = link.href;
+    const fileType = getFileTypeInfo(url);
+    let filename = extractFilename(link);
+
+    // 如果無法從連結文字提取，從 URL 提取
+    if (!filename || filename.length < 3) {
+      filename = extractFilenameFromUrl(url);
+    }
+
+    // 避免重複
+    if (!allPDFs.find(pdf => pdf.url === url)) {
+      allPDFs.push({
+        url: url,
+        filename: filename || '未命名檔案',
+        course: currentCourseName,
+        fileType: fileType,
+        pageUrl: currentPageUrl  // 使用當前頁面 URL
+      });
+    }
+  });
+
+  // 方法2: 掃描當前頁面的檔案連結（使用傳統選擇器）
+  const fileLinks = document.querySelectorAll(fileSelectors);
+  console.log(`E3 Helper: 在當前頁面找到 ${fileLinks.length} 個傳統檔案連結`);
 
   fileLinks.forEach(link => {
     const url = link.href;
@@ -3364,7 +6667,8 @@ async function scanCurrentPage() {
         url: url,
         filename: filename || '未命名檔案',
         course: currentCourseName,
-        fileType: fileType
+        fileType: fileType,
+        pageUrl: currentPageUrl  // 使用當前頁面 URL
       });
     }
   });
@@ -3384,12 +6688,68 @@ async function scanCurrentPage() {
         filename: filename || '未命名檔案',
         course: currentCourseName,
         isResource: true,
+        pageUrl: url,  // resource 連結使用自己的 URL
         fileType: { ext: '', icon: '📎', name: 'RESOURCE' }
       });
     }
   });
 
-  console.log(`E3 Helper: 總共找到 ${allPDFs.length} 個教材檔案`);
+  // 掃描內嵌影片（video 標籤）
+  console.log(`E3 Helper: 開始掃描內嵌影片...`);
+  const embeddedVideos = scanEmbeddedVideos(currentCourseName);
+  console.log(`E3 Helper: 找到 ${embeddedVideos.length} 個內嵌影片`);
+
+  // 將內嵌影片加到列表中
+  embeddedVideos.forEach(video => {
+    if (!allPDFs.find(pdf => pdf.url === video.url)) {
+      allPDFs.push(video);
+    }
+  });
+
+  // 掃描當前頁面的公告貼文（如果是公告頁面）
+  const forumPosts = document.querySelectorAll('.post-content-container, div[id^="post-content-"]');
+  console.log(`E3 Helper: 找到 ${forumPosts.length} 個公告貼文`);
+
+  if (forumPosts.length > 0) {
+    forumPosts.forEach((post, index) => {
+      // 在每個貼文中掃描檔案
+      const postFileSelectors = SUPPORTED_FILE_TYPES.map(type =>
+        `a[href$="${type.ext}"], a[href*="${type.ext}?"], a[href*="pluginfile.php"][href*="${type.ext}"]`
+      ).join(', ');
+
+      const postFileLinks = post.querySelectorAll(postFileSelectors);
+
+      postFileLinks.forEach(link => {
+        const url = link.href;
+        let filename = extractFilename(link);
+        const fileType = getFileTypeInfo(url);
+
+        if (!allPDFs.find(pdf => pdf.url === url)) {
+          allPDFs.push({
+            url: url,
+            filename: filename || '未命名檔案',
+            course: currentCourseName,
+            fileType: fileType,
+            fromForum: true
+          });
+        }
+      });
+
+      // 在每個貼文中掃描內嵌影片
+      const tempDiv = document.createElement('div');
+      tempDiv.innerHTML = post.innerHTML;
+      const postVideos = scanEmbeddedVideos(currentCourseName, tempDiv);
+
+      postVideos.forEach(video => {
+        if (!allPDFs.find(pdf => pdf.url === video.url)) {
+          video.fromForum = true;
+          allPDFs.push(video);
+        }
+      });
+    });
+  }
+
+  console.log(`E3 Helper: 總共找到 ${allPDFs.length} 個檔案（包含教材、內嵌影片和公告）`);
 
   // 更新顯示
   updatePDFList();
@@ -3429,7 +6789,7 @@ async function scanAllCourses() {
       if (downloadStatus) {
         downloadStatus.textContent = `正在掃描課程 ${scannedCourses + 1}/${allCourses.length}: ${course.fullname}`;
       }
-      pdfListContainer.innerHTML = `<div class="e3-helper-loading">正在掃描課程 ${scannedCourses + 1}/${allCourses.length}<br><small style="color: #999; margin-top: 8px; display: block;">${course.fullname}</small><br><small style="color: #667eea; margin-top: 4px; display: block;">已找到 ${totalPDFs} 個教材檔案</small></div>`;
+      pdfListContainer.innerHTML = `<div class="e3-helper-loading">正在掃描課程 ${scannedCourses + 1}/${allCourses.length}<br><small style="color: #999; margin-top: 8px; display: block;">${course.fullname}</small><br><small style="color: #667eea; margin-top: 4px; display: block;">已找到 ${totalPDFs} 個檔案</small></div>`;
 
       const coursePDFs = await scanCourseDeep(course.id, course.fullname);
       totalPDFs += coursePDFs.length;
@@ -3465,6 +6825,277 @@ async function scanAllCourses() {
 }
 
 // 深度掃描單一課程（包括子頁面）
+
+// 通用活動掃描函數 - 掃描任何 Moodle 活動頁面（supervideo、page、quiz 等）
+async function scanActivityForFiles(activityUrl, courseName, activityType = 'activity') {
+  const files = [];
+
+  try {
+    console.log(`E3 Helper: 正在掃描活動: ${activityUrl}`);
+    const response = await fetch(activityUrl, { credentials: 'include' });
+
+    if (!response.ok) {
+      console.log(`E3 Helper: 活動頁面回應異常: ${response.status}`);
+      return files;
+    }
+
+    const html = await response.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+
+    // 建立檔案類型選擇器
+    const fileSelectors = SUPPORTED_FILE_TYPES.map(type =>
+      `a[href$="${type.ext}"], a[href*="${type.ext}?"], a[href*="pluginfile.php"][href*="${type.ext}"]`
+    ).join(', ');
+
+    // 方法1: 掃描所有 pluginfile.php 連結（E3 的主要檔案來源）
+    const pluginfileLinks = doc.querySelectorAll('a[href*="pluginfile.php"]');
+    console.log(`E3 Helper: 在活動中找到 ${pluginfileLinks.length} 個 pluginfile 連結`);
+
+    pluginfileLinks.forEach(link => {
+      const url = link.href;
+      const fileType = getFileTypeInfo(url);
+      const extractedFilename = extractFilenameFromUrl(url);
+      const linkText = link.textContent.trim();
+      const filename = extractedFilename || linkText || '未命名檔案';
+
+      if (!files.find(f => f.url === url)) {
+        files.push({
+          url: url,
+          filename: sanitizeFilename(filename),
+          course: courseName,
+          fileType: fileType,
+          fromActivity: true,
+          activityType: activityType,
+          pageUrl: activityUrl  // 保存頁面 URL
+        });
+      }
+    });
+
+    // 方法2: 傳統檔案選擇器
+    const fileLinks = doc.querySelectorAll(fileSelectors);
+    console.log(`E3 Helper: 在活動中找到 ${fileLinks.length} 個傳統檔案連結`);
+
+    fileLinks.forEach(link => {
+      const url = link.href;
+      const fileType = getFileTypeInfo(url);
+      const extractedFilename = extractFilenameFromUrl(url);
+      const linkText = link.textContent.trim();
+      const filename = extractedFilename || linkText || extractFilename(link);
+
+      if (!files.find(f => f.url === url)) {
+        files.push({
+          url: url,
+          filename: sanitizeFilename(filename),
+          course: courseName,
+          fileType: fileType,
+          fromActivity: true,
+          activityType: activityType,
+          pageUrl: activityUrl  // 保存頁面 URL
+        });
+      }
+    });
+
+    // 方法3: 掃描內嵌影片（supervideo 常使用）
+    const embeddedVideos = scanEmbeddedVideos(courseName, doc);
+    console.log(`E3 Helper: 在活動中找到 ${embeddedVideos.length} 個內嵌影片`);
+
+    embeddedVideos.forEach(video => {
+      if (!files.find(f => f.url === video.url)) {
+        video.fromActivity = true;
+        video.activityType = activityType;
+        video.pageUrl = activityUrl;  // 保存頁面 URL
+        files.push(video);
+      }
+    });
+
+    console.log(`E3 Helper: 活動掃描完成，共找到 ${files.length} 個檔案`);
+  } catch (e) {
+    console.error(`E3 Helper: 掃描活動時發生錯誤:`, e);
+  }
+
+  return files;
+}
+
+// 掃描作業頁面中的附檔和影片
+async function scanAssignmentForFiles(assignUrl, courseName) {
+  const files = [];
+
+  try {
+    console.log(`E3 Helper: 正在掃描作業頁面: ${assignUrl}`);
+    const response = await fetch(assignUrl, { credentials: 'include' });
+    const html = await response.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+
+    // 設置正確的 base URL
+    const base = doc.createElement('base');
+    base.href = assignUrl;
+    doc.head.insertBefore(base, doc.head.firstChild);
+
+    // 方法1: 掃描所有 pluginfile.php 連結（作業附檔的主要來源）
+    const pluginfileLinks = doc.querySelectorAll('a[href*="pluginfile.php"]');
+    console.log(`E3 Helper: 找到 ${pluginfileLinks.length} 個 pluginfile 連結`);
+
+    pluginfileLinks.forEach(link => {
+      const url = link.href;
+      const fileType = getFileTypeInfo(url);
+      let filename = extractFilename(link);
+
+      // 如果無法從連結文字提取，從 URL 提取
+      if (!filename || filename.length < 3) {
+        filename = extractFilenameFromUrl(url);
+      }
+
+      if (!files.find(f => f.url === url)) {
+        files.push({
+          url: url,
+          filename: filename || '未命名檔案',
+          course: courseName,
+          fileType: fileType,
+          fromAssignment: true,
+          pageUrl: assignUrl  // 保存作業頁面 URL
+        });
+        console.log(`E3 Helper: 找到作業附檔 - ${filename}: ${url.substring(0, 100)}...`);
+      }
+    });
+
+    // 方法2: 使用傳統的檔案類型選擇器（作為補充）
+    const fileSelectors = SUPPORTED_FILE_TYPES.map(type =>
+      `a[href$="${type.ext}"], a[href*="${type.ext}?"]`
+    ).join(', ');
+
+    const fileLinks = doc.querySelectorAll(fileSelectors);
+    console.log(`E3 Helper: 找到 ${fileLinks.length} 個傳統檔案連結`);
+
+    fileLinks.forEach(link => {
+      const url = link.href;
+
+      // 排除已經加入的檔案
+      if (files.find(f => f.url === url)) {
+        return;
+      }
+
+      let filename = extractFilename(link);
+      const fileType = getFileTypeInfo(url);
+
+      files.push({
+        url: url,
+        filename: filename || '未命名檔案',
+        course: courseName,
+        fileType: fileType,
+        fromAssignment: true,
+        pageUrl: assignUrl  // 保存作業頁面 URL
+      });
+    });
+
+    // 方法3: 掃描作業頁面中的內嵌影片
+    const embeddedVideos = scanEmbeddedVideos(courseName, doc);
+    console.log(`E3 Helper: 找到 ${embeddedVideos.length} 個內嵌影片`);
+
+    embeddedVideos.forEach(video => {
+      if (!files.find(f => f.url === video.url)) {
+        video.fromAssignment = true;
+        video.pageUrl = assignUrl;  // 保存作業頁面 URL
+        files.push(video);
+      }
+    });
+
+    console.log(`E3 Helper: 在作業頁面中找到 ${files.length} 個檔案（含附檔和影片）`);
+  } catch (e) {
+    console.error(`E3 Helper: 掃描作業頁面時發生錯誤:`, e);
+  }
+
+  return files;
+}
+
+// 掃描公告論壇中的檔案和影片
+async function scanForumForFiles(forumUrl, courseName) {
+  const files = [];
+
+  try {
+    console.log(`E3 Helper: 正在掃描公告論壇: ${forumUrl}`);
+    const response = await fetch(forumUrl, { credentials: 'include' });
+    const html = await response.text();
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+
+    // 設置正確的 base URL
+    const base = doc.createElement('base');
+    base.href = forumUrl;
+    doc.head.insertBefore(base, doc.head.firstChild);
+
+    // 找到所有討論串連結
+    const discussionLinks = doc.querySelectorAll('a[href*="/mod/forum/discuss.php"]');
+    console.log(`E3 Helper: 找到 ${discussionLinks.length} 個討論串`);
+
+    // 掃描每個討論串（最多掃描前 20 個以避免太慢）
+    const maxDiscussions = Math.min(discussionLinks.length, 20);
+    for (let i = 0; i < maxDiscussions; i++) {
+      const discussUrl = discussionLinks[i].href;
+
+      try {
+        const discussResponse = await fetch(discussUrl, { credentials: 'include' });
+        const discussHtml = await discussResponse.text();
+        const discussDoc = parser.parseFromString(discussHtml, 'text/html');
+
+        // 設置正確的 base URL
+        const discussBase = doc.createElement('base');
+        discussBase.href = discussUrl;
+        discussDoc.head.insertBefore(discussBase, discussDoc.head.firstChild);
+
+        // 掃描討論串中的檔案連結
+        const fileSelectors = SUPPORTED_FILE_TYPES.map(type =>
+          `a[href$="${type.ext}"], a[href*="${type.ext}?"], a[href*="pluginfile.php"][href*="${type.ext}"]`
+        ).join(', ');
+
+        const fileLinks = discussDoc.querySelectorAll(fileSelectors);
+
+        fileLinks.forEach(link => {
+          const url = link.href;
+          let filename = extractFilename(link);
+          const fileType = getFileTypeInfo(url);
+
+          // 使用標準化 URL 進行去重比較
+          const normalizedUrl = normalizeUrl(url);
+          if (!files.find(f => normalizeUrl(f.url) === normalizedUrl)) {
+            files.push({
+              url: url,
+              filename: filename || '未命名檔案',
+              course: courseName,
+              fileType: fileType,
+              fromForum: true,
+              pageUrl: discussUrl  // 保存討論串頁面 URL
+            });
+          }
+        });
+
+        // 掃描討論串中的內嵌影片
+        const embeddedVideos = scanEmbeddedVideos(courseName, discussDoc);
+        embeddedVideos.forEach(video => {
+          const normalizedVideoUrl = normalizeUrl(video.url);
+          if (!files.find(f => normalizeUrl(f.url) === normalizedVideoUrl)) {
+            video.fromForum = true;
+            video.pageUrl = discussUrl;  // 保存討論串頁面 URL
+            files.push(video);
+          }
+        });
+
+        // 延遲避免請求過快
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } catch (e) {
+        console.error(`E3 Helper: 掃描討論串時發生錯誤:`, e);
+      }
+    }
+
+    console.log(`E3 Helper: 在公告論壇中找到 ${files.length} 個檔案`);
+  } catch (e) {
+    console.error(`E3 Helper: 掃描公告論壇時發生錯誤:`, e);
+  }
+
+  return files;
+}
+
 async function scanCourseDeep(courseId, courseName) {
   const pdfs = [];
 
@@ -3484,6 +7115,14 @@ async function scanCourseDeep(courseId, courseName) {
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
 
+    // 同時也抓取課程首頁（包含作業、公告等連結）
+    const courseMainUrl = `https://e3p.nycu.edu.tw/course/view.php?id=${courseId}`;
+    console.log(`E3 Helper: 正在抓取課程首頁: ${courseMainUrl}`);
+
+    const mainResponse = await fetch(courseMainUrl);
+    const mainHtml = await mainResponse.text();
+    const mainDoc = parser.parseFromString(mainHtml, 'text/html');
+
     // 設置正確的 base URL
     const base = doc.createElement('base');
     base.href = courseUrl;
@@ -3498,59 +7137,7 @@ async function scanCourseDeep(courseId, courseName) {
     console.log(`E3 Helper: 課程頁面 HTML 長度: ${html.length}`);
     console.log(`E3 Helper: 使用的選擇器: ${fileSelectors.substring(0, 100)}...`);
 
-    // 方法1: 直接的檔案連結
-    const directFileLinks = doc.querySelectorAll(fileSelectors);
-    console.log(`E3 Helper: 在課程 "${courseName}" 中找到 ${directFileLinks.length} 個直接檔案連結`);
-
-    // 除錯：列出所有連結
-    const allLinks = doc.querySelectorAll('a[href]');
-    console.log(`E3 Helper: 課程頁面總共有 ${allLinks.length} 個連結`);
-
-    // 顯示所有連結（用於除錯）
-    const allLinksList = Array.from(allLinks).map(a => ({
-      text: a.textContent.trim().substring(0, 50),
-      href: a.href,
-      class: a.className
-    }));
-    console.log('E3 Helper: 所有連結:', allLinksList);
-
-    directFileLinks.forEach(link => {
-      const url = link.href;
-      let filename = link.textContent.trim();
-      const fileType = getFileTypeInfo(url);
-
-      // 從 span.instancename 提取檔名
-      const instanceName = link.querySelector('span.instancename');
-      if (instanceName) {
-        filename = instanceName.textContent.trim();
-      }
-
-      filename = filename.replace(/\s+/g, ' ').trim();
-
-      if (!filename || filename.length < 3) {
-        const urlParts = url.split('/');
-        filename = decodeURIComponent(urlParts[urlParts.length - 1]);
-        // 移除 URL 參數
-        if (filename.includes('?')) {
-          filename = filename.split('?')[0];
-        }
-        // 移除副檔名（稍後會自動加上）
-        SUPPORTED_FILE_TYPES.forEach(type => {
-          filename = filename.replace(type.ext, '');
-        });
-      }
-
-      if (!pdfs.find(pdf => pdf.url === url)) {
-        pdfs.push({
-          url: url,
-          filename: filename || '未命名檔案',
-          course: courseName,
-          fileType: fileType
-        });
-      }
-    });
-
-    // 方法2: Resource 連結（需要進一步抓取）
+    // 方法1: Resource 連結（需要進一步抓取）
     const resourceLinks = doc.querySelectorAll('a[href*="/mod/resource/view.php"]');
     console.log(`E3 Helper: 在課程 "${courseName}" 中找到 ${resourceLinks.length} 個 resource 連結`);
 
@@ -3602,7 +7189,8 @@ async function scanCourseDeep(courseId, courseName) {
               url: url,
               filename: filename || '未命名檔案',
               course: courseName,
-              fileType: fileType
+              fileType: fileType,
+              pageUrl: resourceUrl  // 使用 resource 頁面 URL
             });
           }
         }
@@ -3614,7 +7202,7 @@ async function scanCourseDeep(courseId, courseName) {
       }
     }
 
-    // 方法3: 尋找所有 activity 連結並檢查（folder、url 等）
+    // 方法2: 尋找所有 activity 連結並檢查（folder、url 等）
     const activityLinks = doc.querySelectorAll('a[href*="/mod/folder/view.php"], a[href*="/mod/url/view.php"]');
     console.log(`E3 Helper: 在課程 "${courseName}" 中找到 ${activityLinks.length} 個其他活動連結`);
 
@@ -3627,8 +7215,42 @@ async function scanCourseDeep(courseId, courseName) {
           const folderHtml = await folderResponse.text();
           const folderDoc = parser.parseFromString(folderHtml, 'text/html');
 
-          // 在資料夾中尋找檔案
+          // 方法1: 掃描所有 pluginfile.php 連結（E3 的主要檔案來源）
+          const pluginfileLinks = folderDoc.querySelectorAll('a[href*="pluginfile.php"]');
+
+          pluginfileLinks.forEach(fileLink => {
+            const url = fileLink.href;
+            const fileType = getFileTypeInfo(url);
+            let filename = fileLink.textContent.trim();
+
+            if (!filename || filename.length < 3) {
+              const urlParts = url.split('/');
+              filename = decodeURIComponent(urlParts[urlParts.length - 1]);
+              if (filename.includes('?')) {
+                filename = filename.split('?')[0];
+              }
+              // 移除副檔名
+              SUPPORTED_FILE_TYPES.forEach(type => {
+                filename = filename.replace(type.ext, '');
+              });
+            }
+
+            // 使用標準化 URL 進行去重比較
+            const normalizedUrl = normalizeUrl(url);
+            if (!pdfs.find(pdf => normalizeUrl(pdf.url) === normalizedUrl)) {
+              pdfs.push({
+                url: url,
+                filename: filename || '未命名檔案',
+                course: courseName,
+                fileType: fileType,
+                pageUrl: folderUrl  // 使用 folder 頁面 URL
+              });
+            }
+          });
+
+          // 方法2: 傳統檔案選擇器（作為補充）
           const folderFiles = folderDoc.querySelectorAll(fileSelectors);
+
           folderFiles.forEach(fileLink => {
             const url = fileLink.href;
             let filename = fileLink.textContent.trim();
@@ -3646,12 +7268,15 @@ async function scanCourseDeep(courseId, courseName) {
               });
             }
 
-            if (!pdfs.find(pdf => pdf.url === url)) {
+            // 使用標準化 URL 進行去重比較
+            const normalizedUrl = normalizeUrl(url);
+            if (!pdfs.find(pdf => normalizeUrl(pdf.url) === normalizedUrl)) {
               pdfs.push({
                 url: url,
                 filename: filename || '未命名檔案',
                 course: courseName,
-                fileType: fileType
+                fileType: fileType,
+                pageUrl: folderUrl  // 使用 folder 頁面 URL
               });
             }
           });
@@ -3663,7 +7288,156 @@ async function scanCourseDeep(courseId, courseName) {
       }
     }
 
-    console.log(`E3 Helper: 在課程 "${courseName}" 中找到 ${pdfs.length} 個教材檔案`);
+    // 方法3: 掃描內嵌影片
+    console.log(`E3 Helper: 開始掃描課程 "${courseName}" 中的內嵌影片...`);
+    const embeddedVideos = scanEmbeddedVideos(courseName, doc);
+    console.log(`E3 Helper: 在課程 "${courseName}" 中找到 ${embeddedVideos.length} 個內嵌影片`);
+
+    // 將內嵌影片加到列表中
+    embeddedVideos.forEach(video => {
+      if (!pdfs.find(pdf => pdf.url === video.url)) {
+        // 為直接掃描到的內嵌影片設置課程首頁為 pageUrl
+        video.pageUrl = video.pageUrl || courseMainUrl;
+        pdfs.push(video);
+      }
+    });
+
+    // 方法4: 掃描作業頁面中的附檔和影片（從課程首頁找作業連結）
+    console.log(`E3 Helper: 開始掃描課程 "${courseName}" 中的作業...`);
+    const assignLinks = mainDoc.querySelectorAll('a[href*="/mod/assign/view.php"]');
+    console.log(`E3 Helper: 在課程首頁找到 ${assignLinks.length} 個作業`);
+
+    // 掃描每個作業（限制最多掃描 10 個以避免太慢）
+    const maxAssigns = Math.min(assignLinks.length, 10);
+    for (let i = 0; i < maxAssigns; i++) {
+      const assignUrl = assignLinks[i].href;
+      const assignFiles = await scanAssignmentForFiles(assignUrl, courseName);
+
+      // 將作業中的檔案加到列表中
+      assignFiles.forEach(file => {
+        if (!pdfs.find(pdf => pdf.url === file.url)) {
+          pdfs.push(file);
+        }
+      });
+
+      // 延遲避免請求過快
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    // 方法5: 掃描公告論壇中的檔案和影片（從課程首頁找論壇連結）
+    console.log(`E3 Helper: 開始掃描課程 "${courseName}" 中的公告論壇...`);
+    const forumLinks = mainDoc.querySelectorAll('a[href*="/mod/forum/view.php"]');
+    console.log(`E3 Helper: 在課程首頁找到 ${forumLinks.length} 個論壇`);
+
+    // 掃描每個論壇（限制最多掃描 3 個以避免太慢）
+    const maxForums = Math.min(forumLinks.length, 3);
+    for (let i = 0; i < maxForums; i++) {
+      const forumUrl = forumLinks[i].href;
+      const forumFiles = await scanForumForFiles(forumUrl, courseName);
+
+      // 將論壇中的檔案加到列表中
+      forumFiles.forEach(file => {
+        if (!pdfs.find(pdf => pdf.url === file.url)) {
+          pdfs.push(file);
+        }
+      });
+    }
+
+    // 方法6: 通用活動掃描（掃描所有其他類型的活動，包括 supervideo、page、quiz 等）
+    console.log(`E3 Helper: 開始掃描課程 "${courseName}" 中的其他活動...`);
+
+    // 找出所有活動連結，但排除已經掃描過的類型
+    const allActivityLinks = mainDoc.querySelectorAll('a[href*="/mod/"][href*="/view.php"]');
+    const otherActivityLinks = Array.from(allActivityLinks).filter(link => {
+      const href = link.href;
+      // 排除已經掃描過的模組類型
+      return !href.includes('/mod/resource/') &&
+             !href.includes('/mod/folder/') &&
+             !href.includes('/mod/assign/') &&
+             !href.includes('/mod/forum/') &&
+             !href.includes('/mod/url/');
+    });
+
+    console.log(`E3 Helper: 在課程首頁找到 ${otherActivityLinks.length} 個其他活動`);
+
+    // 限制掃描數量（避免太慢）
+    const maxOtherActivities = Math.min(otherActivityLinks.length, 15);
+    for (let i = 0; i < maxOtherActivities; i++) {
+      const activityUrl = otherActivityLinks[i].href;
+
+      // 識別活動類型
+      let activityType = 'activity';
+      if (activityUrl.includes('/mod/supervideo/')) {
+        activityType = 'supervideo';
+      } else if (activityUrl.includes('/mod/page/')) {
+        activityType = 'page';
+      } else if (activityUrl.includes('/mod/quiz/')) {
+        activityType = 'quiz';
+      } else if (activityUrl.includes('/mod/book/')) {
+        activityType = 'book';
+      }
+
+      const activityFiles = await scanActivityForFiles(activityUrl, courseName, activityType);
+
+      // 將活動中的檔案加到列表中
+      activityFiles.forEach(file => {
+        if (!pdfs.find(pdf => pdf.url === file.url)) {
+          pdfs.push(file);
+        }
+      });
+
+      // 延遲避免請求過快
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+
+    // 方法7: 直接檔案連結（通用檔案連結，最後掃描以避免覆蓋具體來源的 pageUrl）
+    console.log(`E3 Helper: 開始掃描課程 "${courseName}" 中的直接檔案連結...`);
+    const directFileLinks = doc.querySelectorAll(fileSelectors);
+    console.log(`E3 Helper: 在課程 "${courseName}" 中找到 ${directFileLinks.length} 個直接檔案連結`);
+
+    directFileLinks.forEach(link => {
+      const url = link.href;
+      let filename = link.textContent.trim();
+      const fileType = getFileTypeInfo(url);
+
+      // 從 span.instancename 提取檔名
+      const instanceName = link.querySelector('span.instancename');
+      if (instanceName) {
+        filename = instanceName.textContent.trim();
+      }
+
+      filename = filename.replace(/\s+/g, ' ').trim();
+
+      if (!filename || filename.length < 3) {
+        const urlParts = url.split('/');
+        filename = decodeURIComponent(urlParts[urlParts.length - 1]);
+        // 移除 URL 參數
+        if (filename.includes('?')) {
+          filename = filename.split('?')[0];
+        }
+        // 移除副檔名（稍後會自動加上）
+        SUPPORTED_FILE_TYPES.forEach(type => {
+          filename = filename.replace(type.ext, '');
+        });
+      }
+
+      // 只加入尚未被其他方法掃描到的檔案（避免覆蓋更具體的 pageUrl）
+      const normalizedUrl = normalizeUrl(url);
+      const existingFile = pdfs.find(pdf => normalizeUrl(pdf.url) === normalizedUrl);
+
+      if (!existingFile) {
+        pdfs.push({
+          url: url,
+          filename: filename || '未命名檔案',
+          course: courseName,
+          fileType: fileType,
+          pageUrl: courseMainUrl  // 使用課程首頁 URL（作為備用）
+        });
+      }
+      // 已存在的檔案靜默跳過（避免重複）
+    });
+
+    console.log(`E3 Helper: 在課程 "${courseName}" 中找到 ${pdfs.length} 個檔案（包含教材、作業、內嵌影片、公告和其他活動）`);
   } catch (e) {
     console.error(`E3 Helper: 掃描課程 ${courseName} 時發生錯誤:`, e);
   }
@@ -3673,7 +7447,7 @@ async function scanCourseDeep(courseId, courseName) {
 
 // 獲取當前課程名稱
 function getCurrentCourseName() {
-  let currentCourseName = 'E3教材';
+  let currentCourseName = 'E3檔案';
 
   // 方法1: 從麵包屑導覽取得
   const breadcrumb = document.querySelector('.breadcrumb');
@@ -3685,7 +7459,7 @@ function getCurrentCourseName() {
   }
 
   // 方法2: 從頁面標題取得
-  if (currentCourseName === 'E3教材') {
+  if (currentCourseName === 'E3檔案') {
     const pageTitle = document.querySelector('.page-header-headings h1');
     if (pageTitle) {
       const titleText = pageTitle.textContent.trim();
@@ -3696,7 +7470,7 @@ function getCurrentCourseName() {
   }
 
   // 方法3: 從 body 的 class 取得課程 ID
-  if (currentCourseName === 'E3教材' && allCourses.length > 0) {
+  if (currentCourseName === 'E3檔案' && allCourses.length > 0) {
     const bodyClasses = document.body.className;
     const courseIdMatch = bodyClasses.match(/course-(\d+)/);
     if (courseIdMatch) {
@@ -3730,10 +7504,21 @@ function extractFilename(link) {
 
   // 如果檔名為空或太短，從 URL 提取
   if (!filename || filename.length < 3) {
-    const urlParts = link.href.split('/');
-    filename = decodeURIComponent(urlParts[urlParts.length - 1]);
-    filename = filename.replace('.pdf', '');
+    // 使用 extractFilenameFromUrl 正確提取檔名
+    const urlFilename = extractFilenameFromUrl(link.href);
+    if (urlFilename) {
+      filename = urlFilename;
+      // 移除副檔名（稍後會重新加上）
+      SUPPORTED_FILE_TYPES.forEach(type => {
+        filename = filename.replace(type.ext, '');
+      });
+    } else {
+      filename = '未命名檔案';
+    }
   }
+
+  // 清理檔名中的不合法字元
+  filename = sanitizeFilename(filename);
 
   return filename;
 }
@@ -3745,24 +7530,127 @@ function updatePDFList() {
 
   if (!pdfListContainer) return;
 
+  // 去重：使用標準化 URL 比較
+  const originalCount = allPDFs.length;
+  const seenUrls = new Map(); // 標準化 URL -> 檔案物件
+  const uniquePDFs = [];
+
+  allPDFs.forEach(pdf => {
+    const normalizedUrl = normalizeUrl(pdf.url);
+    if (!seenUrls.has(normalizedUrl)) {
+      seenUrls.set(normalizedUrl, pdf);
+      uniquePDFs.push(pdf);
+    } else {
+      // 如果重複，但新的有更好的 pageUrl，則更新
+      const existing = seenUrls.get(normalizedUrl);
+      if (pdf.pageUrl && !existing.pageUrl) {
+        existing.pageUrl = pdf.pageUrl;
+      }
+      if (pdf.pageUrl && existing.pageUrl === existing.url && pdf.pageUrl !== pdf.url) {
+        // 新的 pageUrl 更好（不是指向檔案本身）
+        existing.pageUrl = pdf.pageUrl;
+      }
+    }
+  });
+
+  if (originalCount !== uniquePDFs.length) {
+    console.log(`E3 Helper: 去除 ${originalCount - uniquePDFs.length} 個重複檔案 (原 ${originalCount} → 現 ${uniquePDFs.length})`);
+    allPDFs = uniquePDFs;
+
+    // 重建 selectedPDFs（更新索引）
+    const newSelectedPDFs = new Set();
+    selectedPDFs.forEach(oldIndex => {
+      if (oldIndex < allPDFs.length) {
+        newSelectedPDFs.add(oldIndex);
+      }
+    });
+    selectedPDFs = newSelectedPDFs;
+  }
+
   if (allPDFs.length === 0) {
-    pdfListContainer.innerHTML = '<div class="e3-helper-no-assignments">目前沒有找到教材檔案<br><small style="color: #999; margin-top: 8px; display: block;">請前往課程頁面使用此功能</small></div>';
+    pdfListContainer.innerHTML = '<div class="e3-helper-no-assignments">目前沒有找到檔案<br><small style="color: #999; margin-top: 8px; display: block;">請前往課程頁面使用此功能，或點擊「📄 掃描此頁」掃描當前頁面</small></div>';
     if (downloadStatus) {
       downloadStatus.textContent = '已選取 0 個檔案';
     }
     return;
   }
 
+  // 除錯：檢查缺少 pageUrl 的檔案
+  const missingPageUrl = allPDFs.filter(pdf => !pdf.pageUrl || pdf.pageUrl === pdf.url);
+  if (missingPageUrl.length > 0) {
+    console.log(`E3 Helper: 發現 ${missingPageUrl.length} 個檔案缺少有效的 pageUrl:`,
+      missingPageUrl.map(pdf => ({
+        filename: pdf.filename,
+        url: pdf.url.substring(0, 80),
+        pageUrl: pdf.pageUrl ? pdf.pageUrl.substring(0, 80) : 'undefined',
+        fromForum: pdf.fromForum,
+        fromAssignment: pdf.fromAssignment,
+        fromActivity: pdf.fromActivity
+      }))
+    );
+  }
+
   pdfListContainer.innerHTML = allPDFs.map((pdf, index) => {
     const isSelected = selectedPDFs.has(index);
     const fileType = pdf.fileType || { icon: '📎', name: 'FILE' };
+
+    // 為內嵌影片和公告檔案添加標記
+    let embeddedBadge = '';
+    if (pdf.isEmbedded) {
+      if (pdf.isIframe && (pdf.url.includes('youtube.com') || pdf.url.includes('youtu.be'))) {
+        embeddedBadge = ' <span style="background: #ff0000; color: white; font-size: 9px; padding: 2px 4px; border-radius: 3px; margin-left: 4px;">YouTube</span>';
+      } else if (pdf.isIframe && pdf.url.includes('vimeo.com')) {
+        embeddedBadge = ' <span style="background: #1ab7ea; color: white; font-size: 9px; padding: 2px 4px; border-radius: 3px; margin-left: 4px;">Vimeo</span>';
+      } else if (pdf.isIframe) {
+        embeddedBadge = ' <span style="background: #667eea; color: white; font-size: 9px; padding: 2px 4px; border-radius: 3px; margin-left: 4px;">內嵌</span>';
+      } else {
+        embeddedBadge = ' <span style="background: #28a745; color: white; font-size: 9px; padding: 2px 4px; border-radius: 3px; margin-left: 4px;">影片</span>';
+      }
+    }
+
+    // 為公告來源的檔案添加標記
+    if (pdf.fromForum) {
+      embeddedBadge += ' <span style="background: #ffc107; color: #333; font-size: 9px; padding: 2px 4px; border-radius: 3px; margin-left: 4px;">📢公告</span>';
+    }
+
+    // 為作業來源的檔案添加標記
+    if (pdf.fromAssignment) {
+      embeddedBadge += ' <span style="background: #17a2b8; color: white; font-size: 9px; padding: 2px 4px; border-radius: 3px; margin-left: 4px;">📝作業</span>';
+    }
+
+    // 為其他活動來源的檔案添加標記
+    if (pdf.fromActivity && pdf.activityType) {
+      const activityBadges = {
+        'supervideo': { text: '📹影片', color: '#e91e63' },
+        'page': { text: '📄頁面', color: '#9c27b0' },
+        'quiz': { text: '📝測驗', color: '#ff9800' },
+        'book': { text: '📖書籍', color: '#795548' },
+        'activity': { text: '🔧活動', color: '#607d8b' }
+      };
+
+      const badge = activityBadges[pdf.activityType] || activityBadges['activity'];
+      embeddedBadge += ` <span style="background: ${badge.color}; color: white; font-size: 9px; padding: 2px 4px; border-radius: 3px; margin-left: 4px;">${badge.text}</span>`;
+    }
+
+    // 決定按鈕顯示
+    const hasPageUrl = pdf.pageUrl && pdf.pageUrl !== pdf.url;
+    const pageButtonHtml = hasPageUrl
+      ? `<button class="e3-helper-file-btn e3-helper-view-page" data-url="${pdf.pageUrl}" title="查看檔案所在的頁面">📄 查看來源頁面</button>`
+      : '';
+
     return `
-      <div class="e3-helper-pdf-item">
-        <input type="checkbox" class="e3-helper-pdf-checkbox" data-index="${index}" ${isSelected ? 'checked' : ''}>
-        <span class="e3-helper-pdf-icon">${fileType.icon}</span>
-        <div class="e3-helper-pdf-info">
-          <div class="e3-helper-pdf-name">${pdf.filename}</div>
-          <div class="e3-helper-pdf-course">${pdf.course} • ${fileType.name}</div>
+      <div class="e3-helper-pdf-item" data-file-url="${pdf.url}" data-page-url="${pdf.pageUrl || ''}" data-index="${index}">
+        <div style="display: flex; align-items: center; gap: 10px; width: 100%;">
+          <input type="checkbox" class="e3-helper-pdf-checkbox" data-index="${index}" ${isSelected ? 'checked' : ''}>
+          <span class="e3-helper-pdf-icon">${fileType.icon}</span>
+          <div class="e3-helper-pdf-info" style="flex: 1;">
+            <div class="e3-helper-pdf-name">${pdf.filename}${embeddedBadge}</div>
+            <div class="e3-helper-pdf-course">${pdf.course} • ${fileType.name}</div>
+          </div>
+        </div>
+        <div class="e3-helper-file-actions">
+          ${pageButtonHtml}
+          <button class="e3-helper-file-btn e3-helper-download-file" data-url="${pdf.url}" data-filename="${pdf.filename}" data-index="${index}" title="直接下載此檔案">⬇️ 直接下載</button>
         </div>
       </div>
     `;
@@ -3785,13 +7673,68 @@ function updatePDFList() {
       updatePDFList();
     });
   });
+
+  // 綁定「查看來源頁面」按鈕
+  pdfListContainer.querySelectorAll('.e3-helper-view-page').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const url = btn.dataset.url;
+      if (url) {
+        window.open(url, '_blank');
+      }
+    });
+  });
+
+  // 綁定「直接下載」按鈕
+  pdfListContainer.querySelectorAll('.e3-helper-download-file').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const url = btn.dataset.url;
+      const index = parseInt(btn.dataset.index);
+      const pdf = allPDFs[index];
+
+      if (pdf) {
+        // 決定檔案副檔名
+        const fileType = pdf.fileType || { ext: '', name: 'FILE' };
+        let finalFilename = sanitizeFilename(pdf.filename);
+
+        // 檢查檔名是否已經有副檔名
+        const hasExtension = SUPPORTED_FILE_TYPES.some(type =>
+          finalFilename.toLowerCase().endsWith(type.ext)
+        );
+
+        // 如果檔名還沒有副檔名，加上副檔名
+        if (fileType.ext && !hasExtension) {
+          finalFilename = `${finalFilename}${fileType.ext}`;
+        }
+
+        // 組合成完整檔名：[課程]_檔名
+        const coursePrefix = sanitizeFilename(pdf.course.substring(0, 20));
+        const fullFilename = `[${coursePrefix}]_${finalFilename}`;
+
+        // 檢查是否為無法直接下載的 iframe 影片
+        if (pdf.isIframe && (pdf.url.includes('youtube.com') || pdf.url.includes('youtu.be') || pdf.url.includes('vimeo.com'))) {
+          // 直接打開連結
+          window.open(pdf.url, '_blank');
+        } else {
+          // 使用 Chrome Downloads API 下載
+          chrome.runtime.sendMessage({
+            action: 'download',
+            url: pdf.url,
+            filename: fullFilename
+          });
+        }
+      }
+    });
+  });
 }
 
 // 綁定下載按鈕事件
 function bindDownloadButtons() {
   const selectAllBtn = document.getElementById('e3-helper-select-all');
   const deselectAllBtn = document.getElementById('e3-helper-deselect-all');
-  const downloadBtn = document.getElementById('e3-helper-download-selected');
+  const downloadSeparateBtn = document.getElementById('e3-helper-download-separate');
+  const downloadZipBtn = document.getElementById('e3-helper-download-zip');
 
   // 使用 dataset.bound 防止重複綁定
   if (selectAllBtn && !selectAllBtn.dataset.bound) {
@@ -3811,16 +7754,158 @@ function bindDownloadButtons() {
     });
   }
 
-  if (downloadBtn && !downloadBtn.dataset.bound) {
-    downloadBtn.dataset.bound = 'true';
-    downloadBtn.addEventListener('click', () => {
-      downloadSelectedPDFs();
+  if (downloadSeparateBtn && !downloadSeparateBtn.dataset.bound) {
+    downloadSeparateBtn.dataset.bound = 'true';
+    downloadSeparateBtn.addEventListener('click', () => {
+      downloadSeparately();
+    });
+  }
+
+  if (downloadZipBtn && !downloadZipBtn.dataset.bound) {
+    downloadZipBtn.dataset.bound = 'true';
+    downloadZipBtn.addEventListener('click', () => {
+      downloadAsZip();
     });
   }
 }
 
+// 分開下載選取的檔案
+async function downloadSeparately() {
+  if (selectedPDFs.size === 0) {
+    alert('請先選取要下載的檔案');
+    return;
+  }
+
+  const downloadStatus = document.querySelector('.e3-helper-download-status');
+  const downloadBtn = document.getElementById('e3-helper-download-separate');
+  const progressContainer = document.querySelector('.e3-helper-progress-container');
+  const progressFill = document.querySelector('.e3-helper-progress-fill');
+  const progressText = document.querySelector('.e3-helper-progress-text');
+
+  if (downloadBtn) {
+    downloadBtn.disabled = true;
+    downloadBtn.textContent = '下載中...';
+  }
+
+  // 顯示進度條
+  if (progressContainer) {
+    progressContainer.style.display = 'block';
+  }
+
+  if (progressFill) {
+    progressFill.style.width = '0%';
+  }
+
+  try {
+    const totalFiles = selectedPDFs.size;
+    let currentIndex = 0;
+
+    // 逐個下載每個檔案
+    for (const index of selectedPDFs) {
+      const pdf = allPDFs[index];
+      currentIndex++;
+
+      // 更新進度條
+      const progress = Math.round((currentIndex / totalFiles) * 100);
+      if (progressFill) {
+        progressFill.style.width = `${progress}%`;
+      }
+
+      if (progressText) {
+        progressText.textContent = `正在下載 ${currentIndex}/${totalFiles}: ${pdf.filename.substring(0, 30)}${pdf.filename.length > 30 ? '...' : ''}`;
+      }
+
+      if (downloadStatus) {
+        downloadStatus.textContent = `正在下載 ${currentIndex}/${totalFiles}: ${pdf.filename}`;
+      }
+
+      try {
+        // 決定檔案副檔名
+        const fileType = pdf.fileType || { ext: '', name: 'FILE' };
+        let finalFilename = sanitizeFilename(pdf.filename);
+
+        // 檢查檔名是否已經有副檔名
+        const hasExtension = SUPPORTED_FILE_TYPES.some(type =>
+          finalFilename.toLowerCase().endsWith(type.ext)
+        );
+
+        // 如果檔名還沒有副檔名，加上副檔名
+        if (fileType.ext && !hasExtension) {
+          finalFilename = `${finalFilename}${fileType.ext}`;
+        }
+
+        // 組合成完整檔名：[課程]_檔名
+        const coursePrefix = sanitizeFilename(pdf.course.substring(0, 20));
+        const fullFilename = `[${coursePrefix}]_${finalFilename}`;
+
+        // 檢查是否為無法直接下載的 iframe 影片
+        if (pdf.isIframe && (pdf.url.includes('youtube.com') || pdf.url.includes('youtu.be') || pdf.url.includes('vimeo.com'))) {
+          console.log(`E3 Helper: 跳過外部影片 ${pdf.filename}（需要使用外部工具下載）`);
+          // 直接打開連結讓用戶自行處理
+          window.open(pdf.url, '_blank');
+        } else {
+          // 使用 Chrome Downloads API 下載
+          chrome.runtime.sendMessage({
+            action: 'download',
+            url: pdf.url,
+            filename: fullFilename
+          });
+        }
+
+        // 延遲避免下載過快
+        await new Promise(resolve => setTimeout(resolve, 200));
+
+      } catch (e) {
+        console.error(`E3 Helper: 下載檔案 ${pdf.filename} 時發生錯誤:`, e);
+      }
+    }
+
+    // 下載完成
+    if (downloadBtn) {
+      downloadBtn.disabled = false;
+      downloadBtn.textContent = '分開下載';
+    }
+
+    if (downloadStatus) {
+      downloadStatus.textContent = `下載完成！共 ${totalFiles} 個檔案`;
+    }
+
+    if (progressText) {
+      progressText.textContent = '下載完成！';
+    }
+
+    // 2秒後隱藏進度條並恢復狀態顯示
+    setTimeout(() => {
+      if (progressContainer) {
+        progressContainer.style.display = 'none';
+      }
+      if (downloadStatus) {
+        downloadStatus.textContent = `已選取 ${selectedPDFs.size} 個檔案`;
+      }
+    }, 2000);
+
+  } catch (e) {
+    console.error('E3 Helper: 下載時發生錯誤:', e);
+    alert('下載失敗，請查看 Console 了解詳情');
+
+    if (downloadBtn) {
+      downloadBtn.disabled = false;
+      downloadBtn.textContent = '分開下載';
+    }
+
+    if (downloadStatus) {
+      downloadStatus.textContent = `已選取 ${selectedPDFs.size} 個檔案`;
+    }
+
+    // 隱藏進度條
+    if (progressContainer) {
+      progressContainer.style.display = 'none';
+    }
+  }
+}
+
 // 批量下載選取的檔案（打包成 ZIP）
-async function downloadSelectedPDFs() {
+async function downloadAsZip() {
   if (selectedPDFs.size === 0) {
     alert('請先選取要下載的檔案');
     return;
@@ -3833,11 +7918,19 @@ async function downloadSelectedPDFs() {
   }
 
   const downloadStatus = document.querySelector('.e3-helper-download-status');
-  const downloadBtn = document.getElementById('e3-helper-download-selected');
+  const downloadBtn = document.getElementById('e3-helper-download-zip');
+  const progressContainer = document.querySelector('.e3-helper-progress-container');
+  const progressFill = document.querySelector('.e3-helper-progress-fill');
+  const progressText = document.querySelector('.e3-helper-progress-text');
 
   if (downloadBtn) {
     downloadBtn.disabled = true;
     downloadBtn.textContent = '打包中...';
+  }
+
+  // 顯示進度條
+  if (progressContainer) {
+    progressContainer.style.display = 'block';
   }
 
   try {
@@ -3845,23 +7938,46 @@ async function downloadSelectedPDFs() {
     let successCount = 0;
     let failCount = 0;
     const fileCountMap = {}; // 用於處理重複檔名
+    const totalFiles = selectedPDFs.size;
 
     if (downloadStatus) {
       downloadStatus.textContent = '正在準備下載...';
     }
 
+    if (progressFill) {
+      progressFill.style.width = '0%';
+    }
+
+    if (progressText) {
+      progressText.textContent = '正在準備下載...';
+    }
+
     // 下載並加入每個檔案到 ZIP
+    let currentIndex = 0;
     for (const index of selectedPDFs) {
       const pdf = allPDFs[index];
+      currentIndex++;
+
+      // 更新進度條
+      const progress = Math.round((currentIndex / totalFiles) * 90); // 保留 10% 給打包
+      if (progressFill) {
+        progressFill.style.width = `${progress}%`;
+      }
+
+      if (progressText) {
+        progressText.textContent = `正在處理 ${currentIndex}/${totalFiles}: ${pdf.filename.substring(0, 30)}${pdf.filename.length > 30 ? '...' : ''}`;
+      }
 
       try {
         if (downloadStatus) {
-          downloadStatus.textContent = `正在處理 ${successCount + failCount + 1}/${selectedPDFs.size}: ${pdf.filename}`;
+          downloadStatus.textContent = `正在處理 ${currentIndex}/${totalFiles}: ${pdf.filename}`;
         }
 
         // 決定檔案副檔名
         const fileType = pdf.fileType || { ext: '', name: 'FILE' };
-        let finalFilename = pdf.filename;
+
+        // 清理檔名（確保沒有路徑分隔符號等不合法字元）
+        let finalFilename = sanitizeFilename(pdf.filename);
 
         // 檢查檔名是否已經有任何副檔名
         const hasExtension = SUPPORTED_FILE_TYPES.some(type =>
@@ -3874,7 +7990,7 @@ async function downloadSelectedPDFs() {
         }
 
         // 取得課程簡稱（取前20字元，避免檔名過長）
-        const coursePrefix = pdf.course.substring(0, 20).replace(/[<>:"/\\|?*]/g, '_');
+        const coursePrefix = sanitizeFilename(pdf.course.substring(0, 20));
 
         // 組合成完整檔名：[課程]_檔名
         let fullFilename = `[${coursePrefix}]_${finalFilename}`;
@@ -3894,18 +8010,31 @@ async function downloadSelectedPDFs() {
           fileCountMap[fullFilename] = 1;
         }
 
-        // 使用 fetch 下載檔案內容
-        const response = await fetch(pdf.url);
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
+        // 檢查是否為無法直接下載的 iframe 影片
+        if (pdf.isIframe && (pdf.url.includes('youtube.com') || pdf.url.includes('youtu.be') || pdf.url.includes('vimeo.com'))) {
+          console.log(`E3 Helper: 跳過外部影片 ${pdf.filename}（需要使用外部工具下載）`);
+
+          // 創建一個文字檔案，包含影片連結
+          const linkText = `${pdf.filename}\n影片連結: ${pdf.url}\n\n此為外部影片（YouTube/Vimeo），請使用瀏覽器開啟連結觀看，或使用專門的下載工具下載。`;
+          const linkBlob = new Blob([linkText], { type: 'text/plain;charset=utf-8' });
+          const linkFilename = uniqueFilename.replace(/\.[^.]+$/, '') + '_連結.txt';
+          zip.file(linkFilename, linkBlob);
+
+          successCount++;
+        } else {
+          // 使用 fetch 下載檔案內容
+          const response = await fetch(pdf.url);
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+
+          const blob = await response.blob();
+
+          // 加入到 ZIP（所有檔案在同一層）
+          zip.file(uniqueFilename, blob);
+
+          successCount++;
         }
-
-        const blob = await response.blob();
-
-        // 加入到 ZIP（所有檔案在同一層）
-        zip.file(uniqueFilename, blob);
-
-        successCount++;
 
       } catch (e) {
         console.error(`E3 Helper: 處理檔案 ${pdf.filename} 時發生錯誤:`, e);
@@ -3917,10 +8046,14 @@ async function downloadSelectedPDFs() {
       alert('沒有成功下載任何檔案');
       if (downloadBtn) {
         downloadBtn.disabled = false;
-        downloadBtn.textContent = '下載選取';
+        downloadBtn.textContent = '打包下載';
       }
       if (downloadStatus) {
         downloadStatus.textContent = `已選取 ${selectedPDFs.size} 個檔案`;
+      }
+      // 隱藏進度條
+      if (progressContainer) {
+        progressContainer.style.display = 'none';
       }
       return;
     }
@@ -3930,17 +8063,34 @@ async function downloadSelectedPDFs() {
       downloadStatus.textContent = '正在打包 ZIP 檔案...';
     }
 
+    if (progressFill) {
+      progressFill.style.width = '90%';
+    }
+
+    if (progressText) {
+      progressText.textContent = '正在壓縮打包...';
+    }
+
     const zipBlob = await zip.generateAsync({
       type: 'blob',
       compression: 'DEFLATE',
       compressionOptions: { level: 6 }
     });
 
+    // 進度條達到 100%
+    if (progressFill) {
+      progressFill.style.width = '100%';
+    }
+
+    if (progressText) {
+      progressText.textContent = '打包完成！';
+    }
+
     // 產生檔名（使用當前日期時間）
     const now = new Date();
     const dateStr = `${now.getFullYear()}${(now.getMonth() + 1).toString().padStart(2, '0')}${now.getDate().toString().padStart(2, '0')}`;
     const timeStr = `${now.getHours().toString().padStart(2, '0')}${now.getMinutes().toString().padStart(2, '0')}`;
-    const zipFilename = `E3教材_${dateStr}_${timeStr}.zip`;
+    const zipFilename = `E3檔案_${dateStr}_${timeStr}.zip`;
 
     // 創建下載連結
     const url = URL.createObjectURL(zipBlob);
@@ -3955,19 +8105,22 @@ async function downloadSelectedPDFs() {
     // 下載完成
     if (downloadBtn) {
       downloadBtn.disabled = false;
-      downloadBtn.textContent = '下載選取';
+      downloadBtn.textContent = '打包下載';
     }
 
     if (downloadStatus) {
       downloadStatus.textContent = `打包完成！成功: ${successCount}, 失敗: ${failCount}`;
     }
 
-    // 3秒後恢復狀態顯示
+    // 2秒後隱藏進度條並恢復狀態顯示
     setTimeout(() => {
+      if (progressContainer) {
+        progressContainer.style.display = 'none';
+      }
       if (downloadStatus) {
         downloadStatus.textContent = `已選取 ${selectedPDFs.size} 個檔案`;
       }
-    }, 3000);
+    }, 2000);
 
   } catch (e) {
     console.error('E3 Helper: 打包 ZIP 時發生錯誤:', e);
@@ -3975,11 +8128,16 @@ async function downloadSelectedPDFs() {
 
     if (downloadBtn) {
       downloadBtn.disabled = false;
-      downloadBtn.textContent = '下載選取';
+      downloadBtn.textContent = '打包下載';
     }
 
     if (downloadStatus) {
       downloadStatus.textContent = `已選取 ${selectedPDFs.size} 個檔案`;
+    }
+
+    // 隱藏進度條
+    if (progressContainer) {
+      progressContainer.style.display = 'none';
     }
   }
 }
@@ -4044,6 +8202,9 @@ function collectAssignmentInfo() {
 
         // 嘗試提取課程名稱
         let courseName = '';
+        // 定義無效的課程名稱（這些是頁面標題，不是真正的課程名稱）
+        const invalidCourseNames = ['焦點綜覽', '通知', '時間軸', 'Timeline', 'Notifications', '概覽', 'Overview'];
+
         // 方法1: 從事件卡片中查找課程連結
         const courseLink = item.querySelector('a[href*="/course/view.php"]');
         if (courseLink) {
@@ -4056,9 +8217,17 @@ function collectAssignmentInfo() {
             courseName = courseEl.textContent.trim();
           }
         }
-        // 方法3: 如果在課程頁面上，從頁面標題獲取
+        // 方法3: 如果在課程頁面上，從頁面標題獲取（但要排除無效名稱）
         if (!courseName && document.querySelector('.page-header-headings h1')) {
-          courseName = document.querySelector('.page-header-headings h1').textContent.trim();
+          const pageTitle = document.querySelector('.page-header-headings h1').textContent.trim();
+          if (!invalidCourseNames.includes(pageTitle)) {
+            courseName = pageTitle;
+          }
+        }
+
+        // 過濾掉無效的課程名稱
+        if (invalidCourseNames.includes(courseName)) {
+          courseName = '';
         }
 
         // 提取截止時間（從 href 中的 time 參數，單位是秒）
@@ -4405,6 +8574,14 @@ function bindSyncButton() {
       }
     });
   }
+
+  const reportBtn = document.getElementById('e3-helper-report-btn');
+  if (reportBtn && !reportBtn.dataset.bound) {
+    reportBtn.dataset.bound = 'true';
+    reportBtn.addEventListener('click', () => {
+      window.open('https://forms.gle/SbPcqgVRuNSdVyqK9', '_blank');
+    });
+  }
 }
 
 // 初始化
@@ -4472,6 +8649,8 @@ async function init() {
       createSidebar();
       bindSyncButton();
       updateSyncStatus();
+      // 初始化通知 badge 計數
+      updateNotificationBadge();
     });
   } else {
     // DOM 已經載入完成
@@ -4481,6 +8660,8 @@ async function init() {
     createSidebar();
     bindSyncButton();
     updateSyncStatus();
+    // 初始化通知 badge 計數
+    updateNotificationBadge();
   }
 
   // 也在頁面載入完成後再收集一次（處理延遲載入的內容）
@@ -4495,5 +8676,63 @@ async function init() {
   setInterval(updateSyncStatus, 300000);
 }
 
+// 監聽來自 background script 的訊息
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'checkParticipants') {
+    console.log('E3 Helper: 收到成員檢測請求');
+
+    // 執行成員檢測
+    checkAllCoursesParticipants().then(changes => {
+      sendResponse({
+        success: true,
+        changes: changes ? changes.length : 0
+      });
+    }).catch(error => {
+      console.error('E3 Helper: 成員檢測失敗', error);
+      sendResponse({
+        success: false,
+        error: error.message
+      });
+    });
+
+    // 返回 true 表示會異步回應
+    return true;
+  } else if (request.action === 'loadAnnouncementsAndMessagesInTab') {
+    console.log('E3 Helper: 收到載入公告和信件的請求');
+
+    // 執行載入
+    Promise.all([loadAnnouncements(), loadMessages()]).then(() => {
+      console.log('E3 Helper: 公告和信件載入完成');
+      sendResponse({
+        success: true,
+        message: '公告和信件已載入'
+      });
+    }).catch(error => {
+      console.error('E3 Helper: 載入公告和信件失敗', error);
+      sendResponse({
+        success: false,
+        error: error.message
+      });
+    });
+
+    // 返回 true 表示會異步回應
+    return true;
+  }
+});
+
 // 啟動
 init();
+
+// 暴露測試函數到 window 對象（方便在 Console 測試）
+try {
+  console.log('E3 Helper: 正在設置 window.E3Helper...');
+  window.E3Helper = {
+    checkParticipants: checkAllCoursesParticipants,
+    fetchCourseParticipants: fetchCourseParticipants,
+    loadNotifications: loadNotifications,
+    updateNotificationBadge: updateNotificationBadge
+  };
+  console.log('E3 Helper: window.E3Helper 已設置');
+} catch (error) {
+  console.error('E3 Helper: 設置 window.E3Helper 失敗', error);
+}
