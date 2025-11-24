@@ -1690,6 +1690,27 @@ function createSidebar() {
     `;
     assignmentContent.appendChild(timezoneInfo);
 
+    // 添加手動新增作業按鈕
+    const addAssignmentBtn = document.createElement('button');
+    addAssignmentBtn.id = 'e3-helper-add-assignment-btn';
+    addAssignmentBtn.className = 'e3-helper-add-assignment-btn';
+    addAssignmentBtn.innerHTML = '➕ 手動新增作業';
+    addAssignmentBtn.style.cssText = `
+      width: calc(100% - 24px);
+      margin: 12px 12px 0 12px;
+      padding: 10px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: all 0.3s;
+      box-shadow: 0 2px 4px rgba(102, 126, 234, 0.3);
+    `;
+    assignmentContent.appendChild(addAssignmentBtn);
+
     const listContainer = document.createElement('div');
     listContainer.className = 'e3-helper-assignment-list';
     assignmentContent.appendChild(listContainer);
@@ -2501,6 +2522,183 @@ function createSidebar() {
     });
 
     document.body.appendChild(sidebar);
+
+    // 創建手動新增作業的模態框
+    const addAssignmentModal = document.createElement('div');
+    addAssignmentModal.id = 'e3-helper-add-assignment-modal';
+    addAssignmentModal.style.cssText = `
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 10001;
+      justify-content: center;
+      align-items: center;
+    `;
+    addAssignmentModal.innerHTML = `
+      <div style="background: white; border-radius: 12px; padding: 24px; width: 90%; max-width: 500px; box-shadow: 0 8px 32px rgba(0,0,0,0.2);">
+        <h3 style="margin: 0 0 16px; font-size: 18px; color: #667eea; display: flex; align-items: center; gap: 8px;">
+          <span id="e3-helper-modal-title">➕ 新增作業</span>
+        </h3>
+        <form id="e3-helper-add-assignment-form" style="display: flex; flex-direction: column; gap: 12px;">
+          <input type="hidden" id="e3-helper-edit-assignment-id" value="">
+          <div>
+            <label style="display: block; margin-bottom: 6px; font-size: 13px; color: #666; font-weight: 600;">作業名稱 *</label>
+            <input type="text" id="e3-helper-assignment-name" required placeholder="例：期末專題報告" style="width: 100%; padding: 10px 12px; border: 2px solid #ddd; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+          </div>
+          <div>
+            <label style="display: block; margin-bottom: 6px; font-size: 13px; color: #666; font-weight: 600;">課程名稱</label>
+            <select id="e3-helper-assignment-course-select" style="width: 100%; padding: 10px 12px; border: 2px solid #ddd; border-radius: 6px; font-size: 14px; box-sizing: border-box; background: white;">
+              <option value="">選擇課程...</option>
+            </select>
+            <input type="text" id="e3-helper-assignment-course-custom" placeholder="請輸入課程名稱" style="width: 100%; padding: 10px 12px; border: 2px solid #ddd; border-radius: 6px; font-size: 14px; box-sizing: border-box; margin-top: 8px; display: none;">
+          </div>
+          <div>
+            <label style="display: block; margin-bottom: 6px; font-size: 13px; color: #666; font-weight: 600;">截止日期 *</label>
+            <input type="date" id="e3-helper-assignment-date" required style="width: 100%; padding: 10px 12px; border: 2px solid #ddd; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+          </div>
+          <div>
+            <label style="display: block; margin-bottom: 6px; font-size: 13px; color: #666; font-weight: 600;">截止時間 *</label>
+            <input type="time" id="e3-helper-assignment-time" required value="23:59" style="width: 100%; padding: 10px 12px; border: 2px solid #ddd; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+          </div>
+          <div style="display: flex; gap: 8px; margin-top: 8px;">
+            <button type="submit" style="flex: 1; padding: 12px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600;">
+              <span id="e3-helper-modal-submit-text">➕ 新增</span>
+            </button>
+            <button type="button" id="e3-helper-cancel-add-assignment" style="flex: 1; padding: 12px; background: #e0e0e0; color: #666; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600;">取消</button>
+          </div>
+        </form>
+      </div>
+    `;
+    document.body.appendChild(addAssignmentModal);
+
+    // 課程選單變化處理
+    const courseSelect = document.getElementById('e3-helper-assignment-course-select');
+    const courseCustomInput = document.getElementById('e3-helper-assignment-course-custom');
+
+    courseSelect.addEventListener('change', (e) => {
+      if (e.target.value === '__custom__') {
+        courseCustomInput.style.display = 'block';
+        courseCustomInput.focus();
+      } else {
+        courseCustomInput.style.display = 'none';
+        courseCustomInput.value = '';
+      }
+    });
+
+    // 手動新增作業的事件處理
+    // 打開模態框
+    document.addEventListener('click', async (e) => {
+      if (e.target && e.target.id === 'e3-helper-add-assignment-btn') {
+        const modal = document.getElementById('e3-helper-add-assignment-modal');
+        const modalTitle = document.getElementById('e3-helper-modal-title');
+        const submitText = document.getElementById('e3-helper-modal-submit-text');
+        const editIdInput = document.getElementById('e3-helper-edit-assignment-id');
+
+        // 重置表單為新增模式
+        modalTitle.textContent = '➕ 新增作業';
+        submitText.textContent = '➕ 新增';
+        editIdInput.value = '';
+        document.getElementById('e3-helper-add-assignment-form').reset();
+        document.getElementById('e3-helper-assignment-time').value = '23:59';
+
+        // 更新課程選項列表
+        await updateCourseOptions();
+
+        // 重置課程選項
+        document.getElementById('e3-helper-assignment-course-select').value = '';
+        document.getElementById('e3-helper-assignment-course-custom').style.display = 'none';
+        document.getElementById('e3-helper-assignment-course-custom').value = '';
+
+        modal.style.display = 'flex';
+      }
+    });
+
+    // 關閉模態框
+    const cancelBtn = document.getElementById('e3-helper-cancel-add-assignment');
+    cancelBtn.addEventListener('click', () => {
+      document.getElementById('e3-helper-add-assignment-modal').style.display = 'none';
+    });
+
+    // 點擊背景關閉
+    addAssignmentModal.addEventListener('click', (e) => {
+      if (e.target === addAssignmentModal) {
+        addAssignmentModal.style.display = 'none';
+      }
+    });
+
+    // 表單提交
+    const form = document.getElementById('e3-helper-add-assignment-form');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const name = document.getElementById('e3-helper-assignment-name').value.trim();
+      const courseSelectValue = document.getElementById('e3-helper-assignment-course-select').value;
+      const courseCustomValue = document.getElementById('e3-helper-assignment-course-custom').value.trim();
+
+      // 決定課程名稱：如果選擇自行輸入，使用自訂輸入框的值
+      let course = '';
+      if (courseSelectValue === '__custom__') {
+        course = courseCustomValue || '手動新增';
+      } else {
+        course = courseSelectValue || '手動新增';
+      }
+
+      const date = document.getElementById('e3-helper-assignment-date').value;
+      const time = document.getElementById('e3-helper-assignment-time').value;
+      const editId = document.getElementById('e3-helper-edit-assignment-id').value;
+
+      if (!name || !date || !time) {
+        alert('請填寫必填欄位');
+        return;
+      }
+
+      // 組合日期和時間
+      const deadlineTimestamp = new Date(`${date}T${time}`).getTime();
+
+      if (editId) {
+        // 編輯模式
+        const assignment = allAssignments.find(a => a.eventId === editId);
+        if (assignment) {
+          assignment.name = name;
+          assignment.course = course;
+          assignment.deadline = deadlineTimestamp;
+
+          // 如果編輯的是同步作業，標記為已手動修改
+          if (!assignment.isManual && !editId.startsWith('manual-')) {
+            assignment.manuallyEdited = true;
+          }
+        }
+      } else {
+        // 新增模式
+        const newAssignment = {
+          eventId: `manual-${Date.now()}`,
+          name: name,
+          course: course,
+          deadline: deadlineTimestamp,
+          url: '#',
+          manualStatus: 'pending',
+          isManual: true
+        };
+        allAssignments.push(newAssignment);
+      }
+
+      // 儲存到 storage
+      await saveAssignments();
+
+      // 更新顯示
+      await updateSidebarContent();
+
+      // 關閉模態框
+      document.getElementById('e3-helper-add-assignment-modal').style.display = 'none';
+
+      // 顯示成功訊息
+      const message = editId ? '作業已更新' : '作業已新增';
+      showTemporaryMessage(message);
+    });
   }
 
   if (!toggleBtn) {
@@ -2927,6 +3125,77 @@ async function testAIConnection() {
   }
 }
 
+// 更新課程選項列表
+async function updateCourseOptions() {
+  const select = document.getElementById('e3-helper-assignment-course-select');
+  if (!select) return;
+
+  // 收集所有唯一的課程名稱
+  const courseNames = new Set();
+
+  // 從 allCourses 中獲取課程名稱
+  if (allCourses && allCourses.length > 0) {
+    allCourses.forEach(course => {
+      if (course.fullname) {
+        courseNames.add(course.fullname);
+      }
+    });
+  }
+
+  // 從現有作業中獲取課程名稱
+  allAssignments.forEach(assignment => {
+    if (assignment.course && assignment.course !== '手動新增' && assignment.course !== '(未知課程)') {
+      courseNames.add(assignment.course);
+    }
+  });
+
+  // 清空並填充 select
+  select.innerHTML = '<option value="">選擇課程...</option>';
+
+  // 將課程名稱排序後添加到選項中
+  const sortedCourses = Array.from(courseNames).sort();
+  sortedCourses.forEach(courseName => {
+    const option = document.createElement('option');
+    option.value = courseName;
+    option.textContent = courseName;
+    select.appendChild(option);
+  });
+
+  // 添加「自行輸入」選項
+  const customOption = document.createElement('option');
+  customOption.value = '__custom__';
+  customOption.textContent = '➕ 自行輸入...';
+  select.appendChild(customOption);
+
+  console.log(`E3 Helper: 已載入 ${sortedCourses.length} 個課程選項`);
+}
+
+// 顯示臨時訊息
+function showTemporaryMessage(message) {
+  const messageEl = document.createElement('div');
+  messageEl.style.cssText = `
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 12px 24px;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    z-index: 10002;
+    font-size: 14px;
+    font-weight: 600;
+    animation: slideIn 0.3s ease;
+  `;
+  messageEl.textContent = message;
+  document.body.appendChild(messageEl);
+
+  setTimeout(() => {
+    messageEl.style.animation = 'slideOut 0.3s ease';
+    setTimeout(() => messageEl.remove(), 300);
+  }, 2000);
+}
+
 // 顯示歡迎訊息（首次使用）
 function showWelcomeMessage() {
   const listContainer = document.querySelector('.e3-helper-assignment-list');
@@ -3041,6 +3310,14 @@ async function updateSidebarContent() {
 
     const hasValidUrl = assignment.url && assignment.url !== '#' && assignment.url.startsWith('http');
 
+    // 所有作業都添加編輯和刪除按鈕
+    const manualControls = `
+      <div style="display: flex; gap: 6px; margin-top: 8px;">
+        <button class="e3-helper-edit-assignment" data-event-id="${assignment.eventId}" onclick="event.preventDefault(); event.stopPropagation();" style="flex: 1; padding: 6px 12px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; transition: all 0.3s;">✏️ 編輯</button>
+        <button class="e3-helper-delete-assignment" data-event-id="${assignment.eventId}" onclick="event.preventDefault(); event.stopPropagation();" style="flex: 1; padding: 6px 12px; background: #dc3545; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; transition: all 0.3s;">🗑️ 刪除</button>
+      </div>
+    `;
+
     return `
       <a href="${hasValidUrl ? assignment.url : 'javascript:void(0);'}" target="${hasValidUrl ? '_blank' : '_self'}" class="e3-helper-assignment-item ${statusClass}" data-event-id="${assignment.eventId}" ${!hasValidUrl ? 'data-need-fetch="true"' : ''} style="display: block; text-decoration: none; color: inherit; cursor: pointer;">
         <div class="e3-helper-assignment-name">${assignment.name}${urgentBadge}</div>
@@ -3050,6 +3327,7 @@ async function updateSidebarContent() {
           <span class="e3-helper-status-toggle ${statusToggleClass}" data-event-id="${assignment.eventId}" onclick="event.preventDefault(); event.stopPropagation();">${statusToggleText}</span>
         </div>
         <div class="e3-helper-assignment-countdown ${countdown.status}">⏰ ${countdown.text}</div>
+        ${manualControls}
       </a>
     `;
   }).join('');
@@ -3109,6 +3387,97 @@ async function updateSidebarContent() {
       e.stopPropagation();
       const eventId = e.target.dataset.eventId;
       await toggleAssignmentStatus(eventId);
+    });
+  });
+
+  // 為編輯按鈕添加點擊事件
+  listContainer.querySelectorAll('.e3-helper-edit-assignment').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const eventId = e.target.dataset.eventId;
+      const assignment = allAssignments.find(a => a.eventId === eventId);
+      if (!assignment) return;
+
+      // 打開模態框並填入現有資料
+      const modal = document.getElementById('e3-helper-add-assignment-modal');
+      const modalTitle = document.getElementById('e3-helper-modal-title');
+      const submitText = document.getElementById('e3-helper-modal-submit-text');
+      const editIdInput = document.getElementById('e3-helper-edit-assignment-id');
+
+      modalTitle.textContent = '✏️ 編輯作業';
+      submitText.textContent = '💾 儲存';
+      editIdInput.value = eventId;
+
+      // 更新課程選項列表
+      await updateCourseOptions();
+
+      // 填入表單
+      document.getElementById('e3-helper-assignment-name').value = assignment.name;
+
+      // 填入課程名稱
+      const courseSelect = document.getElementById('e3-helper-assignment-course-select');
+      const courseCustomInput = document.getElementById('e3-helper-assignment-course-custom');
+      const assignmentCourse = assignment.course || '';
+
+      // 檢查課程名稱是否在選單中
+      let courseFound = false;
+      for (let option of courseSelect.options) {
+        if (option.value === assignmentCourse) {
+          courseSelect.value = assignmentCourse;
+          courseFound = true;
+          break;
+        }
+      }
+
+      // 如果課程不在選單中，使用「自行輸入」
+      if (!courseFound && assignmentCourse) {
+        courseSelect.value = '__custom__';
+        courseCustomInput.value = assignmentCourse;
+        courseCustomInput.style.display = 'block';
+      } else {
+        courseCustomInput.style.display = 'none';
+        courseCustomInput.value = '';
+      }
+
+      // 轉換時間戳為日期和時間
+      const deadline = new Date(assignment.deadline);
+      const dateStr = deadline.toISOString().split('T')[0];
+      const timeStr = `${deadline.getHours().toString().padStart(2, '0')}:${deadline.getMinutes().toString().padStart(2, '0')}`;
+
+      document.getElementById('e3-helper-assignment-date').value = dateStr;
+      document.getElementById('e3-helper-assignment-time').value = timeStr;
+
+      modal.style.display = 'flex';
+    });
+  });
+
+  // 為刪除按鈕添加點擊事件
+  listContainer.querySelectorAll('.e3-helper-delete-assignment').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const eventId = e.target.dataset.eventId;
+      const assignment = allAssignments.find(a => a.eventId === eventId);
+      if (!assignment) return;
+
+      // 檢查是否為同步作業
+      const isManual = assignment.isManual || eventId.startsWith('manual-');
+      const confirmMessage = isManual
+        ? `確定要刪除「${assignment.name}」嗎？此操作無法復原。`
+        : `確定要刪除「${assignment.name}」嗎？\n\n⚠️ 注意：這是從 E3 同步的作業，刪除後下次同步時可能會再次出現。`;
+
+      // 確認刪除
+      if (confirm(confirmMessage)) {
+        // 從陣列中移除
+        const index = allAssignments.findIndex(a => a.eventId === eventId);
+        if (index !== -1) {
+          allAssignments.splice(index, 1);
+          await saveAssignments();
+          await updateSidebarContent();
+          showTemporaryMessage('作業已刪除');
+        }
+      }
     });
   });
 }
