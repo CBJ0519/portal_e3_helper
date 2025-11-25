@@ -3138,11 +3138,10 @@ function createSettingsModal() {
 
               <div class="e3-helper-setting-tip">
                 <strong>📝 步驟一：申請 Google Gemini API 金鑰</strong><br>
-                1. 訪問 <a href="https://ai.google.dev/" target="_blank" style="color: #7c4dff;">Google AI Studio</a>（https://ai.google.dev/）<br>
-                2. 點擊右上角「Get API key」或「Get API key in Google AI Studio」<br>
-                3. 選擇「Create API key」→ 選擇或建立一個專案<br>
-                4. 複製顯示的 API 金鑰（格式：AIzaSy... 開頭，39 個字元）<br>
-                5. 將金鑰貼到上方的「Gemini API Key」輸入框中<br><br>
+                1. 訪問 <a href="https://aistudio.google.com/apikey" target="_blank" style="color: #7c4dff;">Google AI Studio API Keys 頁面</a>（https://aistudio.google.com/apikey）<br>
+                2. 點擊「Create API key」→ 選擇或建立一個專案<br>
+                3. 複製顯示的 API 金鑰（格式：AIzaSy... 開頭，39 個字元）<br>
+                4. 將金鑰貼到上方的「Gemini API Key」輸入框中<br><br>
 
                 <strong style="color: #ff5722;">⚠️ 步驟二：連結帳單帳戶（重要！）</strong><br>
                 <div style="background-color: #fff3e0; padding: 12px; border-radius: 6px; margin: 8px 0; border-left: 4px solid #ff9800;">
@@ -3173,7 +3172,7 @@ function createSettingsModal() {
                 <strong>如何連結帳單帳戶：</strong><br>
                 <div style="margin-left: 12px; font-size: 12px;">
                   <strong>方法一：通過 Google AI Studio</strong><br>
-                  1. 在 <a href="https://ai.google.dev/" target="_blank" style="color: #7c4dff;">Google AI Studio</a> 頁面，點擊「Billing」或「View your billing account」<br>
+                  1. 在 <a href="https://aistudio.google.com/" target="_blank" style="color: #7c4dff;">Google AI Studio</a> 頁面，點擊「Billing」或「View your billing account」<br>
                   2. 點擊「Link a billing account」<br>
                   3. 如果沒有帳單帳戶，點擊「Create billing account」<br>
                   4. 填寫國家、帳戶名稱、幣別<br>
