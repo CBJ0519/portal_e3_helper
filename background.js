@@ -1,6 +1,73 @@
 // NYCU E3 Helper - Background Script (Service Worker)
 // 處理下載請求和自動同步
 
+// ==================== 日誌系統 ====================
+// 保存原始 console 方法
+const originalConsole = {
+  log: console.log.bind(console),
+  info: console.info.bind(console),
+  warn: console.warn.bind(console),
+  error: console.error.bind(console),
+  debug: console.debug.bind(console)
+};
+
+// 儲存日誌到 storage 並通知 content script
+function sendLogToContentScript(type, args) {
+  // 調用原始 console
+  originalConsole[type](...args);
+
+  // 轉換參數為可序列化的格式
+  const serializedArgs = args.map(arg => {
+    if (arg === null) return 'null';
+    if (arg === undefined) return 'undefined';
+    if (typeof arg === 'object') {
+      try {
+        return JSON.stringify(arg, null, 2);
+      } catch (e) {
+        return String(arg);
+      }
+    }
+    return String(arg);
+  });
+
+  // 儲存到 chrome.storage（供後續查詢）
+  chrome.storage.local.get(['backgroundLogs'], (result) => {
+    const logs = result.backgroundLogs || [];
+    logs.push({
+      type: type,
+      args: serializedArgs,
+      timestamp: Date.now(),
+      time: new Date().toLocaleTimeString('zh-TW', { hour12: false })
+    });
+
+    // 只保留最近 200 條日誌
+    if (logs.length > 200) {
+      logs.splice(0, logs.length - 200);
+    }
+
+    chrome.storage.local.set({ backgroundLogs: logs });
+  });
+
+  // 廣播日誌到所有 tabs（即時顯示）
+  chrome.tabs.query({}, (tabs) => {
+    tabs.forEach(tab => {
+      chrome.tabs.sendMessage(tab.id, {
+        action: 'backgroundLog',
+        type: type,
+        args: serializedArgs,
+        time: new Date().toLocaleTimeString('zh-TW', { hour12: false })
+      }).catch(() => {}); // 忽略錯誤（某些 tab 可能沒有 content script）
+    });
+  });
+}
+
+// 攔截 console 方法
+console.log = (...args) => sendLogToContentScript('log', args);
+console.info = (...args) => sendLogToContentScript('info', args);
+console.warn = (...args) => sendLogToContentScript('warn', args);
+console.error = (...args) => sendLogToContentScript('error', args);
+console.debug = (...args) => sendLogToContentScript('debug', args);
+
 console.log('E3 Helper Background Script 已載入');
 
 // 監聽來自 content script 的訊息

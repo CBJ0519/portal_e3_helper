@@ -107,10 +107,24 @@ function renderLogEntry(log) {
     'debug': '🐛'
   }[log.type] || '📝';
 
-  const argsHTML = log.args.map((arg, index) => renderValue(arg, log.id, [index])).join(' ');
+  // 來源標記
+  const sourceTag = log.source === 'background'
+    ? '<span class="e3-helper-log-source" style="background: #667eea; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px; margin-right: 4px;">BG</span>'
+    : '';
+
+  // 如果是來自 background 的日誌，參數已經是字串，直接顯示
+  let argsHTML;
+  if (log.source === 'background') {
+    // background 的日誌參數已經序列化成字串
+    argsHTML = log.args.map(arg => `<span class="e3-helper-log-string">${escapeHtml(arg)}</span>`).join(' ');
+  } else {
+    // content script 的日誌，使用 renderValue 處理
+    argsHTML = log.args.map((arg, index) => renderValue(arg, log.id, [index])).join(' ');
+  }
 
   return `<div class="e3-helper-log-entry ${typeClass}" data-log-id="${log.id}">
     <span class="e3-helper-log-time">[${log.time}]</span>
+    ${sourceTag}
     <span class="e3-helper-log-icon">${icon}</span>
     <span class="e3-helper-log-content-text">${argsHTML}</span>
   </div>`;
@@ -3012,14 +3026,43 @@ function createLogModal() {
   document.body.addEventListener('click', (e) => {
     if (e.target && e.target.id === 'e3-helper-log-btn') {
       logModal.classList.add('show');
-      // 打開時更新顯示
-      const logContent = document.getElementById('e3-helper-log-content');
-      if (logContent) {
-        logContent.innerHTML = getLogsHTML();
-        attachLogEventListeners();
-        // 滾動到底部
-        logContent.scrollTop = logContent.scrollHeight;
-      }
+
+      // 打開時載入 background 歷史日誌並更新顯示
+      chrome.storage.local.get(['backgroundLogs'], (result) => {
+        const backgroundLogs = result.backgroundLogs || [];
+
+        // 將 background 歷史日誌合併到當前日誌（只添加不重複的）
+        const existingIds = new Set(e3HelperLogs.map(log => `${log.source}-${log.time}-${log.type}`));
+
+        backgroundLogs.forEach(bgLog => {
+          const logId = `background-${bgLog.time}-${bgLog.type}`;
+          if (!existingIds.has(logId)) {
+            e3HelperLogs.push({
+              id: e3LogIdCounter++,
+              time: bgLog.time,
+              type: bgLog.type,
+              args: bgLog.args,
+              source: 'background'
+            });
+          }
+        });
+
+        // 按時間排序（如果需要）
+        e3HelperLogs.sort((a, b) => {
+          const timeA = new Date(`1970-01-01 ${a.time}`).getTime();
+          const timeB = new Date(`1970-01-01 ${b.time}`).getTime();
+          return timeA - timeB;
+        });
+
+        // 更新顯示
+        const logContent = document.getElementById('e3-helper-log-content');
+        if (logContent) {
+          logContent.innerHTML = getLogsHTML();
+          attachLogEventListeners();
+          // 滾動到底部
+          logContent.scrollTop = logContent.scrollHeight;
+        }
+      });
     }
   });
 
@@ -9225,7 +9268,26 @@ async function init() {
 
 // 監聽來自 background script 的訊息
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === 'checkParticipants') {
+  if (request.action === 'backgroundLog') {
+    // 接收來自 background.js 的日誌
+    e3HelperLogs.push({
+      id: e3LogIdCounter++,
+      time: request.time,
+      type: request.type,
+      args: request.args, // 已經是字串陣列
+      source: 'background' // 標記來源
+    });
+
+    // 限制日誌數量
+    if (e3HelperLogs.length > 500) {
+      e3HelperLogs.shift();
+    }
+
+    // 動態更新顯示
+    updateLogDisplay();
+
+    return false; // 不需要異步回應
+  } else if (request.action === 'checkParticipants') {
     console.log('E3 Helper: 收到成員檢測請求');
 
     // 執行成員檢測
