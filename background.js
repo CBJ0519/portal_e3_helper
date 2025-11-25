@@ -439,6 +439,52 @@ async function syncAssignments() {
     console.log(`E3 Helper: E3 API 返回了 ${assignments.length} 個作業:`);
     console.log('E3 Helper: 作業 ID 列表:', assignments.map(a => ({ id: a.eventId, name: a.name, deadline: new Date(a.deadline).toLocaleString() })));
 
+    // 先補齊新作業的 URL 和課程名稱（在合併之前）
+    const newAssignmentsNeedingDetails = assignments.filter(a =>
+      (!a.course || a.course === '') || (!a.url || a.url === '')
+    );
+
+    if (newAssignmentsNeedingDetails.length > 0) {
+      console.log(`E3 Helper: 發現 ${newAssignmentsNeedingDetails.length} 個新作業需要補齊詳細資訊，從 API 獲取...`);
+
+      for (const assignment of newAssignmentsNeedingDetails) {
+        try {
+          const eventDetailUrl = `https://e3p.nycu.edu.tw/lib/ajax/service.php?sesskey=${sesskey}`;
+          const eventResponse = await fetchWithTimeout(eventDetailUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify([{
+              index: 0,
+              methodname: 'core_calendar_get_calendar_event_by_id',
+              args: { eventid: parseInt(assignment.eventId) }
+            }])
+          }, 10000);
+
+          if (eventResponse.ok) {
+            const eventData = await eventResponse.json();
+            if (eventData && eventData[0] && eventData[0].data && eventData[0].data.event) {
+              const event = eventData[0].data.event;
+
+              // 補齊課程名稱
+              if (event.course && event.course.fullname && (!assignment.course || assignment.course === '')) {
+                assignment.course = event.course.fullname;
+                console.log(`E3 Helper: 新作業 ${assignment.eventId} (${assignment.name}) 補齊課程: ${event.course.fullname}`);
+              }
+
+              // 補齊 URL
+              if (event.url && (!assignment.url || assignment.url === '')) {
+                assignment.url = event.url;
+                console.log(`E3 Helper: 新作業 ${assignment.eventId} (${assignment.name}) 補齊 URL`);
+              }
+            }
+          }
+        } catch (error) {
+          console.error(`E3 Helper: 獲取新作業 ${assignment.eventId} 詳細資訊失敗:`, error);
+        }
+      }
+    }
+
     // 載入現有的手動狀態和舊作業列表
     const storage = await chrome.storage.local.get(['assignmentStatuses', 'assignments']);
     const statuses = storage.assignmentStatuses || {};
@@ -532,16 +578,16 @@ async function syncAssignments() {
       assignments.push(...keptOldAssignments);
     }
 
-    // 對於沒有課程名稱或 URL 的作業，嘗試從 API 獲取完整資訊
-    // 注意：這個檢查要在保留舊作業之後，才能涵蓋所有作業（包括保留的舊作業）
-    const assignmentsNeedingDetails = assignments.filter(a =>
+    // 對於保留的舊作業，也需要補齊 URL 和課程名稱
+    // （因為舊作業可能也缺少這些資訊）
+    const keptAssignmentsNeedingDetails = keptOldAssignments.filter(a =>
       (!a.course || a.course === '') || (!a.url || a.url === '')
     );
 
-    if (assignmentsNeedingDetails.length > 0) {
-      console.log(`E3 Helper: 發現 ${assignmentsNeedingDetails.length} 個作業需要補齊詳細資訊（課程名稱或 URL），嘗試從 API 獲取...`);
+    if (keptAssignmentsNeedingDetails.length > 0) {
+      console.log(`E3 Helper: 發現 ${keptAssignmentsNeedingDetails.length} 個保留的舊作業需要補齊詳細資訊，從 API 獲取...`);
 
-      for (const assignment of assignmentsNeedingDetails) {
+      for (const assignment of keptAssignmentsNeedingDetails) {
         try {
           const eventDetailUrl = `https://e3p.nycu.edu.tw/lib/ajax/service.php?sesskey=${sesskey}`;
           const eventResponse = await fetchWithTimeout(eventDetailUrl, {
@@ -563,18 +609,18 @@ async function syncAssignments() {
               // 補齊課程名稱
               if (event.course && event.course.fullname && (!assignment.course || assignment.course === '')) {
                 assignment.course = event.course.fullname;
-                console.log(`E3 Helper: 作業 ${assignment.eventId} (${assignment.name}) 補齊課程: ${event.course.fullname}`);
+                console.log(`E3 Helper: 保留的作業 ${assignment.eventId} (${assignment.name}) 補齊課程: ${event.course.fullname}`);
               }
 
               // 補齊 URL
               if (event.url && (!assignment.url || assignment.url === '')) {
                 assignment.url = event.url;
-                console.log(`E3 Helper: 作業 ${assignment.eventId} (${assignment.name}) 補齊 URL: ${event.url}`);
+                console.log(`E3 Helper: 保留的作業 ${assignment.eventId} (${assignment.name}) 補齊 URL`);
               }
             }
           }
         } catch (error) {
-          console.error(`E3 Helper: 獲取作業 ${assignment.eventId} 詳細資訊失敗:`, error);
+          console.error(`E3 Helper: 獲取保留作業 ${assignment.eventId} 詳細資訊失敗:`, error);
         }
       }
     }
