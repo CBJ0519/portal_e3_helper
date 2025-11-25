@@ -2774,6 +2774,30 @@ function createSidebar() {
           icon.textContent = '✕';
           text.textContent = '關閉';
           toggleBtn.classList.add('hidden');
+
+          // 自動同步：檢查距離上次同步的時間
+          chrome.storage.local.get(['lastSyncTime'], (result) => {
+            const lastSyncTime = result.lastSyncTime || 0;
+            const now = Date.now();
+            const timeSinceLastSync = now - lastSyncTime;
+            const fiveMinutes = 5 * 60 * 1000;
+
+            // 如果距離上次同步超過 5 分鐘，自動同步
+            if (timeSinceLastSync > fiveMinutes) {
+              console.log(`E3 Helper: 距離上次同步已 ${Math.floor(timeSinceLastSync / 60000)} 分鐘，自動同步中...`);
+              // 自動觸發同步（不顯示提示）
+              chrome.runtime.sendMessage({ action: 'syncNow' }, (response) => {
+                if (response && response.success) {
+                  console.log('E3 Helper: 自動同步完成');
+                  // 重新載入作業列表
+                  loadAssignmentsFromStorage();
+                  updateSyncStatus();
+                }
+              });
+            } else {
+              console.log(`E3 Helper: 距離上次同步僅 ${Math.floor(timeSinceLastSync / 60000)} 分鐘，無需自動同步`);
+            }
+          });
         } else {
           icon.textContent = '📚';
           text.textContent = 'E3小助手';
@@ -3252,9 +3276,24 @@ async function updateSidebarContent() {
     return;
   }
 
-  // 按截止時間排序（顯示所有作業，包括已繳交的）
+  // 過濾並排序作業
   const now = new Date().getTime();
-  const sortedAssignments = [...allAssignments].sort((a, b) => a.deadline - b.deadline);
+  const filteredAssignments = allAssignments.filter(assignment => {
+    // 隱藏已繳交且過期的作業
+    const isSubmitted = assignment.manualStatus === 'submitted';
+    const isOverdue = assignment.deadline < now;
+
+    // 如果同時是已繳交和過期，則隱藏
+    if (isSubmitted && isOverdue) {
+      console.log(`E3 Helper: 過濾掉已繳交且過期的作業 - ${assignment.name} (ID: ${assignment.eventId}, 截止: ${new Date(assignment.deadline).toLocaleString()})`);
+      return false;
+    }
+
+    return true;
+  });
+
+  // 按截止時間排序
+  const sortedAssignments = [...filteredAssignments].sort((a, b) => a.deadline - b.deadline);
 
   if (sortedAssignments.length === 0) {
     listContainer.innerHTML = '<div class="e3-helper-no-assignments">暫無作業</div>';
