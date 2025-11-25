@@ -400,7 +400,7 @@ async function syncAssignments() {
       methodname: 'core_calendar_get_action_events_by_timesort',
       args: {
         limitnum: 50,
-        timesortfrom: Math.floor(Date.now() / 1000) - 86400 * 7, // 過去 7 天
+        timesortfrom: Math.floor(Date.now() / 1000) - 86400 * 30, // 過去 30 天（確保較舊的作業也能被抓取）
         timesortto: Math.floor(Date.now() / 1000) + 86400 * 90  // 未來 90 天
       }
     }])
