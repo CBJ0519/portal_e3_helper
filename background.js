@@ -713,6 +713,11 @@ async function checkAssignmentSubmissionStatus(assignments, sesskey, statuses) {
         const data = await response.json();
         console.log(`E3 Helper: API 數據結構 - ${assignment.name}, hasData: ${!!(data && data[0] && data[0].data)}`);
 
+        // 輸出完整的 API 響應以供診斷（只輸出第一個作業的完整數據，避免日誌過多）
+        if (checkedCount === 0) {
+          console.log(`E3 Helper: 完整 API 響應範例 (${assignment.name}):`, JSON.stringify(data, null, 2));
+        }
+
         if (data && data[0] && data[0].data) {
           const submissionData = data[0].data;
 
