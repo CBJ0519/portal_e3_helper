@@ -3137,14 +3137,74 @@ function createSettingsModal() {
               </div>
 
               <div class="e3-helper-setting-tip">
-                <strong>💡 如何獲取 Gemini API Key？</strong><br>
-                1. 訪問 <a href="https://makersuite.google.com/app/apikey" target="_blank">Google AI Studio</a><br>
-                2. 點擊「Get API key」建立金鑰<br>
-                3. 每天有免費額度可使用（1500 次請求/天）<br><br>
-                <strong>✨ Gemini 2.5 Flash 優點：</strong><br>
-                • 準確度高：能精確理解翻譯和摘要意圖<br>
-                • 配額友善：每日免費額度可進行大量操作<br>
-                • 快速回應：翻譯和摘要速度快
+                <strong>📝 步驟一：申請 Google Gemini API 金鑰</strong><br>
+                1. 訪問 <a href="https://ai.google.dev/" target="_blank" style="color: #7c4dff;">Google AI Studio</a>（https://ai.google.dev/）<br>
+                2. 點擊右上角「Get API key」或「Get API key in Google AI Studio」<br>
+                3. 選擇「Create API key」→ 選擇或建立一個專案<br>
+                4. 複製顯示的 API 金鑰（格式：AIzaSy... 開頭，39 個字元）<br>
+                5. 將金鑰貼到上方的「Gemini API Key」輸入框中<br><br>
+
+                <strong style="color: #ff5722;">⚠️ 步驟二：連結帳單帳戶（重要！）</strong><br>
+                <div style="background-color: #fff3e0; padding: 12px; border-radius: 6px; margin: 8px 0; border-left: 4px solid #ff9800;">
+                  <strong>為什麼需要連結帳單帳戶？</strong><br>
+                  <table style="width: 100%; margin-top: 8px; font-size: 12px; border-collapse: collapse;">
+                    <tr style="background-color: #f5f5f5;">
+                      <th style="padding: 6px; text-align: left; border: 1px solid #ddd;">項目</th>
+                      <th style="padding: 6px; text-align: center; border: 1px solid #ddd;">未連結帳單</th>
+                      <th style="padding: 6px; text-align: center; border: 1px solid #ddd; background-color: #e8f5e9;">已連結帳單</th>
+                    </tr>
+                    <tr>
+                      <td style="padding: 6px; border: 1px solid #ddd;">每分鐘請求數（RPM）</td>
+                      <td style="padding: 6px; text-align: center; border: 1px solid #ddd; color: #f44336;"><strong>15</strong></td>
+                      <td style="padding: 6px; text-align: center; border: 1px solid #ddd; color: #4caf50;"><strong>1,000</strong></td>
+                    </tr>
+                    <tr>
+                      <td style="padding: 6px; border: 1px solid #ddd;">每天 Token 額度</td>
+                      <td style="padding: 6px; text-align: center; border: 1px solid #ddd;">有限</td>
+                      <td style="padding: 6px; text-align: center; border: 1px solid #ddd; color: #4caf50;">1,500,000</td>
+                    </tr>
+                  </table>
+                  <div style="margin-top: 8px; font-size: 12px;">
+                    💳 <strong>不用擔心費用：</strong>Google 提供 $300 美元免費試用額度，<span style="color: #4caf50; font-weight: bold;">不會自動扣款</span>！<br>
+                    💰 <strong>實際費用：</strong>Gemini 2.5 Flash 完全免費！
+                  </div>
+                </div>
+
+                <strong>如何連結帳單帳戶：</strong><br>
+                <div style="margin-left: 12px; font-size: 12px;">
+                  <strong>方法一：通過 Google AI Studio</strong><br>
+                  1. 在 <a href="https://ai.google.dev/" target="_blank" style="color: #7c4dff;">Google AI Studio</a> 頁面，點擊「Billing」或「View your billing account」<br>
+                  2. 點擊「Link a billing account」<br>
+                  3. 如果沒有帳單帳戶，點擊「Create billing account」<br>
+                  4. 填寫國家、帳戶名稱、幣別<br>
+                  5. 輸入信用卡資訊（會先扣 $1 驗證，稍後退回）<br>
+                  6. 點擊「Submit」完成<br><br>
+
+                  <strong>方法二：直接到 Google Cloud Console</strong><br>
+                  1. 訪問 <a href="https://console.cloud.google.com/billing" target="_blank" style="color: #7c4dff;">Google Cloud Console - Billing</a><br>
+                  2. 點擊「Create account」建立帳單帳戶<br>
+                  3. 按照上述步驟 4-6 完成設定<br>
+                  4. 回到 AI Studio，選擇剛建立的帳單帳戶連結
+                </div>
+                <br>
+
+                <strong>💰 費用與額度說明</strong><br>
+                • <strong>Gemini 2.5 Flash：完全免費</strong>（推薦使用）<br>
+                • 即使連結帳單，也不會扣款（因為使用免費模型）<br>
+                • $300 美元免費試用額度可用於其他 Google Cloud 服務<br>
+                • 每月使用成本：<strong>$0 元</strong>（100% 免費）<br><br>
+
+                <strong>❓ 常見問題</strong><br>
+                <div style="margin-left: 12px; font-size: 12px;">
+                  <strong>Q: 翻譯時出現「Resource has been exhausted」錯誤？</strong><br>
+                  A: 這表示 API 請求額度用盡。<strong>請立即連結帳單帳戶</strong>，額度會從 15 RPM 提升到 1,000 RPM。<br><br>
+
+                  <strong>Q: 連結帳單會被扣款嗎？</strong><br>
+                  A: 不會！使用 Gemini 2.5 Flash 完全免費，且 Google 提供 $300 試用額度，不會自動扣款。<br><br>
+
+                  <strong>Q: 如何確認帳單已連結？</strong><br>
+                  A: 在 <a href="https://console.cloud.google.com/billing" target="_blank" style="color: #7c4dff;">Google Cloud Console - Billing</a> 查看，專案旁應顯示「Billing account linked」。
+                </div>
               </div>
 
               <!-- 連接狀態 -->
