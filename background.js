@@ -369,6 +369,9 @@ async function syncAssignments() {
         manualStatus: 'pending'
       }));
 
+    console.log(`E3 Helper: E3 API 返回了 ${assignments.length} 個作業:`);
+    console.log('E3 Helper: 作業 ID 列表:', assignments.map(a => ({ id: a.eventId, name: a.name, deadline: new Date(a.deadline).toLocaleString() })));
+
     // 載入現有的手動狀態和舊作業列表
     const storage = await chrome.storage.local.get(['assignmentStatuses', 'assignments']);
     const statuses = storage.assignmentStatuses || {};
@@ -414,11 +417,30 @@ async function syncAssignments() {
 
     // 找出那些已標記為「已繳交」但不在新列表中的舊作業（可能已過期但用戶想保留）
     const newAssignmentIds = new Set(assignments.map(a => a.eventId));
+
+    console.log('E3 Helper: 檢查舊作業是否需要保留...');
+    console.log('E3 Helper: 舊作業列表:', oldAssignments.map(a => ({
+      id: a.eventId,
+      name: a.name,
+      manualStatus: a.manualStatus,
+      inNewList: newAssignmentIds.has(a.eventId),
+      inStatuses: !!statuses[a.eventId]
+    })));
+
     const keptOldAssignments = oldAssignments
       .filter(oldAssignment => {
-        // 保留條件：不在新列表中 && 手動標記為已繳交
-        return !newAssignmentIds.has(oldAssignment.eventId) &&
-               statuses[oldAssignment.eventId] === 'submitted';
+        // 保留條件：不在新列表中 && 已繳交（包含手動標記和自動檢測）
+        const isManuallySubmitted = statuses[oldAssignment.eventId] === 'submitted';
+        const isAutoSubmitted = oldAssignment.manualStatus === 'submitted';
+        const shouldKeep = !newAssignmentIds.has(oldAssignment.eventId) &&
+                          (isManuallySubmitted || isAutoSubmitted);
+
+        if (!newAssignmentIds.has(oldAssignment.eventId)) {
+          console.log(`E3 Helper: 舊作業 ${oldAssignment.eventId} (${oldAssignment.name}) 不在新列表中，檢查是否保留:`);
+          console.log(`  - 手動標記: ${isManuallySubmitted}, 自動檢測: ${isAutoSubmitted}, 是否保留: ${shouldKeep}`);
+        }
+
+        return shouldKeep;
       })
       .map(oldAssignment => {
         // 確保 manualStatus 是最新的，並清理無效的課程名稱
