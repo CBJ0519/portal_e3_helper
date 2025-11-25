@@ -570,7 +570,13 @@ async function syncAssignments() {
 
     // 自動檢測作業繳交狀態
     console.log('E3 Helper: 開始檢測作業繳交狀態...');
-    await checkAssignmentSubmissionStatus(assignments, sesskey);
+    const updatedStatuses = await checkAssignmentSubmissionStatus(assignments, sesskey, statuses);
+
+    // 如果有新的自動檢測狀態，保存到 storage
+    if (updatedStatuses) {
+      await chrome.storage.local.set({ assignmentStatuses: updatedStatuses });
+      console.log('E3 Helper: 已更新自動檢測的繳交狀態到 storage');
+    }
 
     // 檢測新作業並發送通知
     await detectAndNotifyNewAssignments(assignments, oldAssignments);
@@ -586,9 +592,11 @@ async function syncAssignments() {
 }
 
 // 檢查作業繳交狀態
-async function checkAssignmentSubmissionStatus(assignments, sesskey) {
+async function checkAssignmentSubmissionStatus(assignments, sesskey, statuses) {
   let checkedCount = 0;
   let submittedCount = 0;
+  let statusUpdated = false;
+  const updatedStatuses = { ...statuses }; // 複製一份狀態字典
 
   for (const assignment of assignments) {
     // 跳過手動新增的作業
@@ -648,12 +656,17 @@ async function checkAssignmentSubmissionStatus(assignments, sesskey) {
           if (isSubmitted && assignment.manualStatus !== 'submitted') {
             assignment.manualStatus = 'submitted';
             assignment.autoDetected = true; // 標記為自動檢測
+
+            // 同時保存到 statuses，確保狀態持久化
+            updatedStatuses[assignment.eventId] = 'submitted';
+            statusUpdated = true;
+
             submittedCount++;
-            console.log(`E3 Helper: 檢測到作業已繳交 - ${assignment.name}`);
+            console.log(`E3 Helper: 檢測到作業已繳交 - ${assignment.name} (ID: ${assignment.eventId})`);
           } else if (!isSubmitted && assignment.autoDetected) {
-            // 如果之前是自動檢測為已繳交，但現在檢測為未繳交，則更新
-            assignment.manualStatus = 'pending';
-            delete assignment.autoDetected;
+            // 如果之前是自動檢測為已繳交，但現在檢測為未繳交
+            // 不要輕易重置，可能是檢測失敗或暫時錯誤
+            console.log(`E3 Helper: 作業 ${assignment.name} 之前檢測為已繳交，但現在顯示未繳交，保持原狀態`);
           }
 
           checkedCount++;
@@ -669,6 +682,9 @@ async function checkAssignmentSubmissionStatus(assignments, sesskey) {
   }
 
   console.log(`E3 Helper: 繳交狀態檢查完成 - 已檢查 ${checkedCount} 個作業，其中 ${submittedCount} 個已繳交`);
+
+  // 如果有更新狀態，返回更新後的字典
+  return statusUpdated ? updatedStatuses : null;
 }
 
 // 同步課程列表
