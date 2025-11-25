@@ -714,16 +714,55 @@ async function checkAssignmentSubmissionStatus(assignments, sesskey, statuses) {
 
         // 檢查 API 是否返回錯誤
         if (data && data[0] && data[0].error) {
-          // API 返回錯誤（例如：Web Service 被停用）
+          // API 不可用，改用 HTML 解析方式
           if (checkedCount === 0) {
-            // 只在第一次錯誤時輸出警告
             console.warn(`E3 Helper: ⚠️ mod_assign_get_submission_status API 不可用`);
-            console.warn(`E3 Helper: 錯誤訊息: ${data[0].exception?.message || '未知錯誤'}`);
             console.warn(`E3 Helper: 錯誤代碼: ${data[0].exception?.errorcode || '未知'}`);
-            console.warn(`E3 Helper: 自動檢測繳交狀態功能無法使用，將跳過所有作業`);
+            console.warn(`E3 Helper: 🔄 切換到 HTML 解析模式進行檢測...`);
           }
-          // 跳過這個作業，不再檢查後續作業（因為 API 不可用）
-          break;
+
+          // 使用 HTML 解析方式檢測
+          try {
+            const htmlResponse = await fetchWithTimeout(assignment.url, {
+              method: 'GET',
+              credentials: 'include'
+            }, 8000);
+
+            if (htmlResponse.ok) {
+              const html = await htmlResponse.text();
+
+              // 檢查多個提交狀態指示器
+              const isSubmitted =
+                html.includes('submissionstatussubmitted') ||  // CSS class
+                html.includes('已繳交') ||  // 中文
+                html.includes('已提交供評分') ||  // 中文變體
+                html.includes('Submitted for grading') ||  // 英文
+                html.includes('修改已繳交的作業') ||  // 按鈕文字
+                /class="[^"]*submissionstatus[^"]*submitted[^"]*"/.test(html);  // Regex
+
+              if (isSubmitted && assignment.manualStatus !== 'submitted') {
+                assignment.manualStatus = 'submitted';
+                assignment.autoDetected = true;
+                updatedStatuses[assignment.eventId] = 'submitted';
+                statusUpdated = true;
+                submittedCount++;
+                console.log(`E3 Helper: ✓ HTML解析檢測到已繳交 - ${assignment.name}`);
+              } else if (!isSubmitted && assignment.autoDetected) {
+                console.log(`E3 Helper: 作業 ${assignment.name} 之前檢測為已繳交，但現在顯示未繳交，保持原狀態`);
+              } else {
+                console.log(`E3 Helper: HTML解析 ${assignment.name} 繳交狀態: ${isSubmitted ? '已繳交' : '未繳交'}`);
+              }
+
+              checkedCount++;
+            } else {
+              console.warn(`E3 Helper: 無法訪問作業頁面 - ${assignment.name}, status: ${htmlResponse.status}`);
+            }
+          } catch (htmlError) {
+            console.error(`E3 Helper: HTML解析失敗 - ${assignment.name}:`, htmlError);
+          }
+
+          // 繼續檢查下一個作業（使用 HTML 模式）
+          continue;
         }
 
         console.log(`E3 Helper: API 數據結構 - ${assignment.name}, hasData: ${!!(data && data[0] && data[0].data)}`);
