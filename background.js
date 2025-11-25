@@ -655,168 +655,71 @@ async function syncAssignments() {
   return [];
 }
 
-// 檢查作業繳交狀態
+// 檢查作業繳交狀態（使用 HTML 解析）
 async function checkAssignmentSubmissionStatus(assignments, sesskey, statuses) {
   let checkedCount = 0;
   let submittedCount = 0;
   let statusUpdated = false;
   const updatedStatuses = { ...statuses }; // 複製一份狀態字典
 
-  console.log(`E3 Helper: 自動檢測開始檢查 ${assignments.length} 個作業...`);
+  console.log(`E3 Helper: 開始使用 HTML 解析檢測 ${assignments.length} 個作業的繳交狀態...`);
 
   for (const assignment of assignments) {
     // 跳過手動新增的作業
     if (assignment.isManual || assignment.eventId.startsWith('manual-')) {
-      console.log(`E3 Helper: 跳過手動作業 - ${assignment.name} (ID: ${assignment.eventId})`);
       continue;
     }
 
-    // 從 URL 中提取 assign ID
+    // 檢查 URL 有效性
     if (!assignment.url || !assignment.url.includes('mod/assign/view.php')) {
-      console.log(`E3 Helper: 跳過無效 URL 作業 - ${assignment.name} (ID: ${assignment.eventId}), URL: ${assignment.url || '無'}`);
       continue;
     }
-
-    console.log(`E3 Helper: 準備檢查作業 - ${assignment.name} (ID: ${assignment.eventId})`);
 
     try {
-      const urlParams = new URLSearchParams(new URL(assignment.url).search);
-      const cmid = urlParams.get('id'); // course module ID
+      // 直接訪問作業頁面並解析 HTML
+      const htmlResponse = await fetchWithTimeout(assignment.url, {
+        method: 'GET',
+        credentials: 'include'
+      }, 8000);
 
-      console.log(`E3 Helper: URL 解析 - ${assignment.name}, cmid: ${cmid}, URL: ${assignment.url}`);
+      if (htmlResponse.ok) {
+        const html = await htmlResponse.text();
 
-      if (!cmid) {
-        console.log(`E3 Helper: 跳過無 cmid 作業 - ${assignment.name} (ID: ${assignment.eventId})`);
-        continue;
-      }
+        // 檢查多個繳交狀態指示器
+        const isSubmitted =
+          html.includes('submissionstatussubmitted') ||  // CSS class
+          html.includes('已繳交') ||  // 中文
+          html.includes('已提交供評分') ||  // 中文變體
+          html.includes('Submitted for grading') ||  // 英文
+          html.includes('修改已繳交的作業') ||  // 按鈕文字
+          /class="[^"]*submissionstatus[^"]*submitted[^"]*"/.test(html);  // Regex
 
-      // 使用 Moodle API 獲取繳交狀態
-      const statusUrl = `https://e3p.nycu.edu.tw/lib/ajax/service.php?sesskey=${sesskey}`;
-      console.log(`E3 Helper: 發送繳交狀態檢查請求 - ${assignment.name}, cmid: ${cmid}`);
-
-      const response = await fetchWithTimeout(statusUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify([{
-          index: 0,
-          methodname: 'mod_assign_get_submission_status',
-          args: {
-            assignid: parseInt(cmid)
-          }
-        }])
-      }, 8000); // 8 秒超時
-
-      console.log(`E3 Helper: API 響應狀態 - ${assignment.name}, status: ${response.status}, ok: ${response.ok}`);
-
-      if (response.ok) {
-        const data = await response.json();
-
-        // 檢查 API 是否返回錯誤
-        if (data && data[0] && data[0].error) {
-          // API 不可用，改用 HTML 解析方式
-          if (checkedCount === 0) {
-            console.warn(`E3 Helper: ⚠️ mod_assign_get_submission_status API 不可用`);
-            console.warn(`E3 Helper: 錯誤代碼: ${data[0].exception?.errorcode || '未知'}`);
-            console.warn(`E3 Helper: 🔄 切換到 HTML 解析模式進行檢測...`);
-          }
-
-          // 使用 HTML 解析方式檢測
-          try {
-            const htmlResponse = await fetchWithTimeout(assignment.url, {
-              method: 'GET',
-              credentials: 'include'
-            }, 8000);
-
-            if (htmlResponse.ok) {
-              const html = await htmlResponse.text();
-
-              // 檢查多個提交狀態指示器
-              const isSubmitted =
-                html.includes('submissionstatussubmitted') ||  // CSS class
-                html.includes('已繳交') ||  // 中文
-                html.includes('已提交供評分') ||  // 中文變體
-                html.includes('Submitted for grading') ||  // 英文
-                html.includes('修改已繳交的作業') ||  // 按鈕文字
-                /class="[^"]*submissionstatus[^"]*submitted[^"]*"/.test(html);  // Regex
-
-              if (isSubmitted && assignment.manualStatus !== 'submitted') {
-                assignment.manualStatus = 'submitted';
-                assignment.autoDetected = true;
-                updatedStatuses[assignment.eventId] = 'submitted';
-                statusUpdated = true;
-                submittedCount++;
-                console.log(`E3 Helper: ✓ HTML解析檢測到已繳交 - ${assignment.name}`);
-              } else if (!isSubmitted && assignment.autoDetected) {
-                console.log(`E3 Helper: 作業 ${assignment.name} 之前檢測為已繳交，但現在顯示未繳交，保持原狀態`);
-              } else {
-                console.log(`E3 Helper: HTML解析 ${assignment.name} 繳交狀態: ${isSubmitted ? '已繳交' : '未繳交'}`);
-              }
-
-              checkedCount++;
-            } else {
-              console.warn(`E3 Helper: 無法訪問作業頁面 - ${assignment.name}, status: ${htmlResponse.status}`);
-            }
-          } catch (htmlError) {
-            console.error(`E3 Helper: HTML解析失敗 - ${assignment.name}:`, htmlError);
-          }
-
-          // 繼續檢查下一個作業（使用 HTML 模式）
-          continue;
+        if (isSubmitted && assignment.manualStatus !== 'submitted') {
+          // 檢測到已繳交，更新狀態
+          assignment.manualStatus = 'submitted';
+          assignment.autoDetected = true;
+          updatedStatuses[assignment.eventId] = 'submitted';
+          statusUpdated = true;
+          submittedCount++;
+          console.log(`E3 Helper: ✓ 檢測到已繳交 - ${assignment.name}`);
+        } else if (!isSubmitted && assignment.autoDetected) {
+          // 之前檢測為已繳交，但現在顯示未繳交，保持原狀態（可能是暫時錯誤）
+          console.log(`E3 Helper: ${assignment.name} 保持已繳交狀態`);
         }
 
-        console.log(`E3 Helper: API 數據結構 - ${assignment.name}, hasData: ${!!(data && data[0] && data[0].data)}`);
-
-        if (data && data[0] && data[0].data) {
-          const submissionData = data[0].data;
-
-          // 檢查是否已繳交
-          let isSubmitted = false;
-
-          // 檢查繳交狀態（只依賴 status，不使用 timemodified）
-          if (submissionData.lastattempt && submissionData.lastattempt.submission) {
-            const submission = submissionData.lastattempt.submission;
-
-            // 只有 status 為 'submitted' 才算已繳交
-            // 注意：'new' 表示有草稿但未提交，'draft' 也是未提交狀態
-            if (submission.status === 'submitted') {
-              isSubmitted = true;
-            }
-          }
-
-          // 更新作業狀態（只有在檢測到已繳交時才自動更新，避免覆蓋手動標記）
-          if (isSubmitted && assignment.manualStatus !== 'submitted') {
-            assignment.manualStatus = 'submitted';
-            assignment.autoDetected = true; // 標記為自動檢測
-
-            // 同時保存到 statuses，確保狀態持久化
-            updatedStatuses[assignment.eventId] = 'submitted';
-            statusUpdated = true;
-
-            submittedCount++;
-            console.log(`E3 Helper: 檢測到作業已繳交 - ${assignment.name} (ID: ${assignment.eventId})`);
-          } else if (!isSubmitted && assignment.autoDetected) {
-            // 如果之前是自動檢測為已繳交，但現在檢測為未繳交
-            // 不要輕易重置，可能是檢測失敗或暫時錯誤
-            console.log(`E3 Helper: 作業 ${assignment.name} 之前檢測為已繳交，但現在顯示未繳交，保持原狀態`);
-          } else {
-            console.log(`E3 Helper: 作業 ${assignment.name} 繳交狀態: ${isSubmitted ? '已繳交' : '未繳交'}, 當前狀態: ${assignment.manualStatus}`);
-          }
-
-          checkedCount++;
-          console.log(`E3 Helper: 成功檢查作業 - ${assignment.name}, checkedCount: ${checkedCount}`);
-        }
+        checkedCount++;
+      } else {
+        console.warn(`E3 Helper: 無法訪問 ${assignment.name} (status: ${htmlResponse.status})`);
       }
     } catch (error) {
-      console.error(`E3 Helper: 檢查作業 ${assignment.name} 繳交狀態失敗:`, error);
-      // 繼續處理下一個作業
+      console.error(`E3 Helper: 檢查 ${assignment.name} 失敗:`, error.message);
     }
 
-    // 避免請求過快，稍微延遲
+    // 避免請求過快
     await new Promise(resolve => setTimeout(resolve, 200));
   }
 
-  console.log(`E3 Helper: 繳交狀態檢查完成 - 已檢查 ${checkedCount} 個作業，其中 ${submittedCount} 個已繳交`);
+  console.log(`E3 Helper: 檢測完成 - 已檢查 ${checkedCount} 個作業，其中 ${submittedCount} 個已繳交`);
 
   // 如果有更新狀態，返回更新後的字典
   return statusUpdated ? updatedStatuses : null;
