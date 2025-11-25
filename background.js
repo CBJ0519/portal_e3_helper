@@ -437,11 +437,18 @@ async function syncAssignments() {
       }));
 
     console.log(`E3 Helper: E3 API 返回了 ${assignments.length} 個作業:`);
-    console.log('E3 Helper: 作業 ID 列表:', assignments.map(a => ({ id: a.eventId, name: a.name, deadline: new Date(a.deadline).toLocaleString() })));
+    console.log('E3 Helper: 作業 ID 列表:', assignments.map(a => ({
+      id: a.eventId,
+      name: a.name,
+      hasURL: !!a.url,
+      urlValid: a.url && a.url.includes('mod/assign'),
+      url: a.url ? a.url.substring(0, 50) + '...' : '無',
+      deadline: new Date(a.deadline).toLocaleString()
+    })));
 
     // 先補齊新作業的 URL 和課程名稱（在合併之前）
     const newAssignmentsNeedingDetails = assignments.filter(a =>
-      (!a.course || a.course === '') || (!a.url || a.url === '')
+      (!a.course || a.course === '') || (!a.url || a.url === '' || !a.url.includes('mod/assign'))
     );
 
     if (newAssignmentsNeedingDetails.length > 0) {
