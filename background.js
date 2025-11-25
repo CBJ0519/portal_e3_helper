@@ -544,17 +544,13 @@ async function checkAssignmentSubmissionStatus(assignments, sesskey) {
           // 檢查是否已繳交
           let isSubmitted = false;
 
-          // 檢查多種可能的繳交狀態指標
+          // 檢查繳交狀態（只依賴 status，不使用 timemodified）
           if (submissionData.lastattempt && submissionData.lastattempt.submission) {
             const submission = submissionData.lastattempt.submission;
 
-            // status 為 'submitted' 表示已繳交
-            if (submission.status === 'submitted' || submission.status === 'new') {
-              isSubmitted = true;
-            }
-
-            // 或者檢查 timemodified（如果有修改時間，通常表示已繳交）
-            if (submission.timemodified && submission.timemodified > 0) {
+            // 只有 status 為 'submitted' 才算已繳交
+            // 注意：'new' 表示有草稿但未提交，'draft' 也是未提交狀態
+            if (submission.status === 'submitted') {
               isSubmitted = true;
             }
           }
