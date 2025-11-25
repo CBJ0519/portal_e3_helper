@@ -711,12 +711,22 @@ async function checkAssignmentSubmissionStatus(assignments, sesskey, statuses) {
 
       if (response.ok) {
         const data = await response.json();
-        console.log(`E3 Helper: API 數據結構 - ${assignment.name}, hasData: ${!!(data && data[0] && data[0].data)}`);
 
-        // 輸出完整的 API 響應以供診斷（只輸出第一個作業的完整數據，避免日誌過多）
-        if (checkedCount === 0) {
-          console.log(`E3 Helper: 完整 API 響應範例 (${assignment.name}):`, JSON.stringify(data, null, 2));
+        // 檢查 API 是否返回錯誤
+        if (data && data[0] && data[0].error) {
+          // API 返回錯誤（例如：Web Service 被停用）
+          if (checkedCount === 0) {
+            // 只在第一次錯誤時輸出警告
+            console.warn(`E3 Helper: ⚠️ mod_assign_get_submission_status API 不可用`);
+            console.warn(`E3 Helper: 錯誤訊息: ${data[0].exception?.message || '未知錯誤'}`);
+            console.warn(`E3 Helper: 錯誤代碼: ${data[0].exception?.errorcode || '未知'}`);
+            console.warn(`E3 Helper: 自動檢測繳交狀態功能無法使用，將跳過所有作業`);
+          }
+          // 跳過這個作業，不再檢查後續作業（因為 API 不可用）
+          break;
         }
+
+        console.log(`E3 Helper: API 數據結構 - ${assignment.name}, hasData: ${!!(data && data[0] && data[0].data)}`);
 
         if (data && data[0] && data[0].data) {
           const submissionData = data[0].data;
