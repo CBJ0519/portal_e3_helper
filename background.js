@@ -683,12 +683,17 @@ async function checkAssignmentSubmissionStatus(assignments, sesskey, statuses) {
       const urlParams = new URLSearchParams(new URL(assignment.url).search);
       const cmid = urlParams.get('id'); // course module ID
 
+      console.log(`E3 Helper: URL 解析 - ${assignment.name}, cmid: ${cmid}, URL: ${assignment.url}`);
+
       if (!cmid) {
+        console.log(`E3 Helper: 跳過無 cmid 作業 - ${assignment.name} (ID: ${assignment.eventId})`);
         continue;
       }
 
       // 使用 Moodle API 獲取繳交狀態
       const statusUrl = `https://e3p.nycu.edu.tw/lib/ajax/service.php?sesskey=${sesskey}`;
+      console.log(`E3 Helper: 發送繳交狀態檢查請求 - ${assignment.name}, cmid: ${cmid}`);
+
       const response = await fetchWithTimeout(statusUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -702,8 +707,11 @@ async function checkAssignmentSubmissionStatus(assignments, sesskey, statuses) {
         }])
       }, 8000); // 8 秒超時
 
+      console.log(`E3 Helper: API 響應狀態 - ${assignment.name}, status: ${response.status}, ok: ${response.ok}`);
+
       if (response.ok) {
         const data = await response.json();
+        console.log(`E3 Helper: API 數據結構 - ${assignment.name}, hasData: ${!!(data && data[0] && data[0].data)}`);
 
         if (data && data[0] && data[0].data) {
           const submissionData = data[0].data;
@@ -737,9 +745,12 @@ async function checkAssignmentSubmissionStatus(assignments, sesskey, statuses) {
             // 如果之前是自動檢測為已繳交，但現在檢測為未繳交
             // 不要輕易重置，可能是檢測失敗或暫時錯誤
             console.log(`E3 Helper: 作業 ${assignment.name} 之前檢測為已繳交，但現在顯示未繳交，保持原狀態`);
+          } else {
+            console.log(`E3 Helper: 作業 ${assignment.name} 繳交狀態: ${isSubmitted ? '已繳交' : '未繳交'}, 當前狀態: ${assignment.manualStatus}`);
           }
 
           checkedCount++;
+          console.log(`E3 Helper: 成功檢查作業 - ${assignment.name}, checkedCount: ${checkedCount}`);
         }
       }
     } catch (error) {
