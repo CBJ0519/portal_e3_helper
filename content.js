@@ -3301,8 +3301,14 @@ async function updateSidebarContent() {
     let statusToggleText = '標記為已繳交';
     let statusToggleClass = '';
     if (manualStatus === 'submitted') {
-      statusToggleText = '✓ 已繳交';
-      statusToggleClass = 'submitted';
+      // 檢查是否為自動檢測
+      if (assignment.autoDetected) {
+        statusToggleText = '✓ 已繳交 (自動)';
+        statusToggleClass = 'submitted auto-detected';
+      } else {
+        statusToggleText = '✓ 已繳交';
+        statusToggleClass = 'submitted';
+      }
     }
 
     // 緊急標籤

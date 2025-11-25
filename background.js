@@ -479,6 +479,10 @@ async function syncAssignments() {
       }
     }
 
+    // 自動檢測作業繳交狀態
+    console.log('E3 Helper: 開始檢測作業繳交狀態...');
+    await checkAssignmentSubmissionStatus(assignments, sesskey);
+
     // 檢測新作業並發送通知
     await detectAndNotifyNewAssignments(assignments, oldAssignments);
 
@@ -490,6 +494,96 @@ async function syncAssignments() {
   }
 
   return [];
+}
+
+// 檢查作業繳交狀態
+async function checkAssignmentSubmissionStatus(assignments, sesskey) {
+  let checkedCount = 0;
+  let submittedCount = 0;
+
+  for (const assignment of assignments) {
+    // 跳過手動新增的作業
+    if (assignment.isManual || assignment.eventId.startsWith('manual-')) {
+      continue;
+    }
+
+    // 從 URL 中提取 assign ID
+    if (!assignment.url || !assignment.url.includes('mod/assign/view.php')) {
+      continue;
+    }
+
+    try {
+      const urlParams = new URLSearchParams(new URL(assignment.url).search);
+      const cmid = urlParams.get('id'); // course module ID
+
+      if (!cmid) {
+        continue;
+      }
+
+      // 使用 Moodle API 獲取繳交狀態
+      const statusUrl = `https://e3p.nycu.edu.tw/lib/ajax/service.php?sesskey=${sesskey}`;
+      const response = await fetchWithTimeout(statusUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify([{
+          index: 0,
+          methodname: 'mod_assign_get_submission_status',
+          args: {
+            assignid: parseInt(cmid)
+          }
+        }])
+      }, 8000); // 8 秒超時
+
+      if (response.ok) {
+        const data = await response.json();
+
+        if (data && data[0] && data[0].data) {
+          const submissionData = data[0].data;
+
+          // 檢查是否已繳交
+          let isSubmitted = false;
+
+          // 檢查多種可能的繳交狀態指標
+          if (submissionData.lastattempt && submissionData.lastattempt.submission) {
+            const submission = submissionData.lastattempt.submission;
+
+            // status 為 'submitted' 表示已繳交
+            if (submission.status === 'submitted' || submission.status === 'new') {
+              isSubmitted = true;
+            }
+
+            // 或者檢查 timemodified（如果有修改時間，通常表示已繳交）
+            if (submission.timemodified && submission.timemodified > 0) {
+              isSubmitted = true;
+            }
+          }
+
+          // 更新作業狀態（只有在檢測到已繳交時才自動更新，避免覆蓋手動標記）
+          if (isSubmitted && assignment.manualStatus !== 'submitted') {
+            assignment.manualStatus = 'submitted';
+            assignment.autoDetected = true; // 標記為自動檢測
+            submittedCount++;
+            console.log(`E3 Helper: 檢測到作業已繳交 - ${assignment.name}`);
+          } else if (!isSubmitted && assignment.autoDetected) {
+            // 如果之前是自動檢測為已繳交，但現在檢測為未繳交，則更新
+            assignment.manualStatus = 'pending';
+            delete assignment.autoDetected;
+          }
+
+          checkedCount++;
+        }
+      }
+    } catch (error) {
+      console.error(`E3 Helper: 檢查作業 ${assignment.name} 繳交狀態失敗:`, error);
+      // 繼續處理下一個作業
+    }
+
+    // 避免請求過快，稍微延遲
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+
+  console.log(`E3 Helper: 繳交狀態檢查完成 - 已檢查 ${checkedCount} 個作業，其中 ${submittedCount} 個已繳交`);
 }
 
 // 同步課程列表
