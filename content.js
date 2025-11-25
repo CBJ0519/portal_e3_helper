@@ -3252,23 +3252,9 @@ async function updateSidebarContent() {
     return;
   }
 
-  // 過濾並排序作業
+  // 按截止時間排序（顯示所有作業，包括已繳交的）
   const now = new Date().getTime();
-  const filteredAssignments = allAssignments.filter(assignment => {
-    // 隱藏已繳交且過期的作業
-    const isSubmitted = assignment.manualStatus === 'submitted';
-    const isOverdue = assignment.deadline < now;
-
-    // 如果同時是已繳交和過期，則隱藏
-    if (isSubmitted && isOverdue) {
-      return false;
-    }
-
-    return true;
-  });
-
-  // 按截止時間排序
-  const sortedAssignments = [...filteredAssignments].sort((a, b) => a.deadline - b.deadline);
+  const sortedAssignments = [...allAssignments].sort((a, b) => a.deadline - b.deadline);
 
   if (sortedAssignments.length === 0) {
     listContainer.innerHTML = '<div class="e3-helper-no-assignments">暫無作業</div>';
