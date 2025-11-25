@@ -662,16 +662,22 @@ async function checkAssignmentSubmissionStatus(assignments, sesskey, statuses) {
   let statusUpdated = false;
   const updatedStatuses = { ...statuses }; // 複製一份狀態字典
 
+  console.log(`E3 Helper: 自動檢測開始檢查 ${assignments.length} 個作業...`);
+
   for (const assignment of assignments) {
     // 跳過手動新增的作業
     if (assignment.isManual || assignment.eventId.startsWith('manual-')) {
+      console.log(`E3 Helper: 跳過手動作業 - ${assignment.name} (ID: ${assignment.eventId})`);
       continue;
     }
 
     // 從 URL 中提取 assign ID
     if (!assignment.url || !assignment.url.includes('mod/assign/view.php')) {
+      console.log(`E3 Helper: 跳過無效 URL 作業 - ${assignment.name} (ID: ${assignment.eventId}), URL: ${assignment.url || '無'}`);
       continue;
     }
+
+    console.log(`E3 Helper: 準備檢查作業 - ${assignment.name} (ID: ${assignment.eventId})`);
 
     try {
       const urlParams = new URLSearchParams(new URL(assignment.url).search);
