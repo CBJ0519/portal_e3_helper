@@ -2898,10 +2898,20 @@ function setupAssignmentPageListener() {
   assignmentPageListenerSetup = true;
   console.log('E3 Helper: 設置作業頁面監聽器（全局，僅一次）');
 
+  // 記錄最後一次觸發時間，防止短時間內重複觸發
+  let lastTriggerTime = 0;
+  const MIN_TRIGGER_INTERVAL = 10000; // 最少 10 秒間隔
+
   // 監聽整個頁面的變化（包括作業繳交訊息）
   const observer = new MutationObserver((mutations) => {
     // 檢查是否在作業頁面
     if (!window.location.href.includes('mod/assign/view.php')) {
+      return;
+    }
+
+    // 防止短時間內重複觸發
+    const now = Date.now();
+    if (now - lastTriggerTime < MIN_TRIGGER_INTERVAL) {
       return;
     }
 
@@ -2911,25 +2921,46 @@ function setupAssignmentPageListener() {
         const addedNodes = Array.from(mutation.addedNodes);
         for (const node of addedNodes) {
           if (node.nodeType === Node.ELEMENT_NODE) {
-            const text = node.textContent || '';
-            // 檢測常見的提交成功訊息
-            if (text.includes('提交') || text.includes('已儲存') || text.includes('成功') ||
-                text.includes('Submitted') || text.includes('saved') || text.includes('success')) {
+            // 檢查是否是通知類元素（Moodle 使用 alert, notification 等 class）
+            const isNotification = node.classList && (
+              node.classList.contains('alert') ||
+              node.classList.contains('notification') ||
+              node.classList.contains('alert-success') ||
+              node.classList.contains('alert-info') ||
+              node.querySelector('.alert') ||
+              node.querySelector('.notification')
+            );
 
-              // 防抖：清除之前的計時器
-              if (autoSyncTimeout) {
-                console.log('E3 Helper: 取消之前的自動同步計時器');
-                clearTimeout(autoSyncTimeout);
+            if (isNotification) {
+              const text = node.textContent || '';
+
+              // 更精確的匹配：需要同時包含"作業"/"assignment"和"提交"/"submitted"相關詞彙
+              const hasAssignmentKeyword = text.includes('作業') || text.includes('assignment') || text.includes('Assignment');
+              const hasSubmitKeyword =
+                text.includes('已提交') || text.includes('提交成功') ||
+                text.includes('Submitted') || text.includes('submitted successfully') ||
+                text.includes('submission has been') || text.includes('已儲存');
+
+              if (hasAssignmentKeyword && hasSubmitKeyword) {
+                // 記錄觸發時間
+                lastTriggerTime = now;
+
+                // 防抖：清除之前的計時器
+                if (autoSyncTimeout) {
+                  clearTimeout(autoSyncTimeout);
+                }
+
+                console.log('E3 Helper: 檢測到作業提交成功訊息，3 秒後自動刷新列表...');
+                console.log('E3 Helper: 觸發元素文本:', text.substring(0, 100));
+
+                // 延遲 3 秒後自動同步（給伺服器時間處理）
+                autoSyncTimeout = setTimeout(() => {
+                  console.log('E3 Helper: 執行繳交後自動同步...');
+                  performAutoSync();
+                  autoSyncTimeout = null;
+                }, 3000);
+                return;
               }
-
-              console.log('E3 Helper: 檢測到作業可能已繳交，3 秒後自動刷新列表...');
-              // 延遲 3 秒後自動同步（給伺服器時間處理）
-              autoSyncTimeout = setTimeout(() => {
-                console.log('E3 Helper: 執行繳交後自動同步...');
-                performAutoSync();
-                autoSyncTimeout = null;
-              }, 3000);
-              return;
             }
           }
         }
