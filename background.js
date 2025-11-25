@@ -91,6 +91,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .then(result => sendResponse(result))
       .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
+  } else if (request.action === 'fetchContent') {
+    // 從非 E3 網站抓取公告/信件內容
+    console.log(`E3 Helper: 收到抓取內容請求 - ${request.url}`);
+    fetchContentFromE3(request.url)
+      .then(html => sendResponse({ success: true, html: html }))
+      .catch(error => sendResponse({ success: false, error: error.message }));
+    return true;
   }
 });
 
@@ -954,6 +961,31 @@ async function callCustomAPI(config, prompt) {
     return data.choices[0].message.content.trim();
   } catch (error) {
     throw error;
+  }
+}
+
+// ==================== 抓取內容功能 ====================
+
+// 從 E3 抓取公告/信件內容
+async function fetchContentFromE3(url) {
+  console.log(`E3 Helper: 開始抓取內容 - ${url}`);
+
+  try {
+    const response = await fetchWithTimeout(url, {
+      method: 'GET',
+      credentials: 'include'
+    }, 15000); // 15 秒超時
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const html = await response.text();
+    console.log(`E3 Helper: 內容抓取成功，長度: ${html.length}`);
+    return html;
+  } catch (error) {
+    console.error('E3 Helper: 抓取內容失敗', error);
+    throw new Error(`無法抓取內容: ${error.message}`);
   }
 }
 

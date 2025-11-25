@@ -6606,22 +6606,35 @@ async function loadItemPreview(itemId, itemType, itemUrl, previewContainer) {
   try {
     console.log(`E3 Helper: 載入 ${itemType} 預覽，ID: ${itemId}`);
 
-    // 檢查是否在 E3 網站
-    if (!isOnE3Site()) {
-      previewContainer.innerHTML = `
-        <div style="text-align: center; color: #999;">
-          請在 E3 網站上查看詳細內容
-        </div>
-      `;
-      return;
-    }
+    let html;
 
-    const response = await fetch(itemUrl, { credentials: 'include' });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
+    // 嘗試直接 fetch（在 E3 網站上應該可以）
+    try {
+      const response = await fetch(itemUrl, { credentials: 'include' });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      html = await response.text();
+    } catch (fetchError) {
+      console.log('E3 Helper: 直接 fetch 失敗，嘗試使用 background script', fetchError);
 
-    const html = await response.text();
+      // 如果直接 fetch 失敗（可能因為跨域），使用 background script
+      try {
+        const response = await chrome.runtime.sendMessage({
+          action: 'fetchContent',
+          url: itemUrl
+        });
+
+        if (response && response.success) {
+          html = response.html;
+        } else {
+          throw new Error(response?.error || '無法載入內容');
+        }
+      } catch (bgError) {
+        console.error('E3 Helper: Background script 抓取失敗', bgError);
+        throw new Error('無法載入內容，請確認已登入 E3');
+      }
+    }
     const parser = new DOMParser();
     const doc = parser.parseFromString(html, 'text/html');
 
