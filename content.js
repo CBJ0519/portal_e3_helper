@@ -4,6 +4,10 @@
 // ==================== 全局變數 ====================
 // 自動同步定時器
 let autoSyncIntervalId = null;
+// 作業頁面監聽器是否已設置
+let assignmentPageListenerSetup = false;
+// 自動同步計時器（防止重複觸發）
+let autoSyncTimeout = null;
 
 // ==================== 日誌系統 ====================
 // 用於收集擴充功能操作日誌（完全鏡像 console）
@@ -2880,60 +2884,64 @@ function performAutoSync() {
 
 // 監聽作業頁面，繳交後自動刷新
 function setupAssignmentPageListener() {
+  // 防止重複設置
+  if (assignmentPageListenerSetup) {
+    console.log('E3 Helper: 作業頁面監聽器已設置，跳過重複設置');
+    return;
+  }
+
   // 只在 E3 網站監聽
   if (!window.location.href.includes('e3.nycu.edu.tw') && !window.location.href.includes('e3p.nycu.edu.tw')) {
     return;
   }
 
-  // 檢查是否在作業頁面
-  if (window.location.href.includes('mod/assign/view.php')) {
-    console.log('E3 Helper: 檢測到作業頁面，監聽繳交狀態...');
+  assignmentPageListenerSetup = true;
+  console.log('E3 Helper: 設置作業頁面監聽器（全局，僅一次）');
 
-    // 監聽「提交成功」訊息
-    const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        if (mutation.type === 'childList') {
-          // 檢查是否有「提交成功」相關的訊息
-          const addedNodes = Array.from(mutation.addedNodes);
-          for (const node of addedNodes) {
-            if (node.nodeType === Node.ELEMENT_NODE) {
-              const text = node.textContent || '';
-              // 檢測常見的提交成功訊息
-              if (text.includes('提交') || text.includes('已儲存') || text.includes('成功') ||
-                  text.includes('Submitted') || text.includes('saved') || text.includes('success')) {
-                console.log('E3 Helper: 檢測到作業可能已繳交，3 秒後自動刷新列表...');
-                // 延遲 3 秒後自動同步（給伺服器時間處理）
-                setTimeout(() => {
-                  console.log('E3 Helper: 執行繳交後自動同步...');
-                  performAutoSync();
-                }, 3000);
-                // 只觸發一次
-                observer.disconnect();
-                return;
+  // 監聽整個頁面的變化（包括作業繳交訊息）
+  const observer = new MutationObserver((mutations) => {
+    // 檢查是否在作業頁面
+    if (!window.location.href.includes('mod/assign/view.php')) {
+      return;
+    }
+
+    for (const mutation of mutations) {
+      if (mutation.type === 'childList') {
+        // 檢查是否有「提交成功」相關的訊息
+        const addedNodes = Array.from(mutation.addedNodes);
+        for (const node of addedNodes) {
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            const text = node.textContent || '';
+            // 檢測常見的提交成功訊息
+            if (text.includes('提交') || text.includes('已儲存') || text.includes('成功') ||
+                text.includes('Submitted') || text.includes('saved') || text.includes('success')) {
+
+              // 防抖：清除之前的計時器
+              if (autoSyncTimeout) {
+                console.log('E3 Helper: 取消之前的自動同步計時器');
+                clearTimeout(autoSyncTimeout);
               }
+
+              console.log('E3 Helper: 檢測到作業可能已繳交，3 秒後自動刷新列表...');
+              // 延遲 3 秒後自動同步（給伺服器時間處理）
+              autoSyncTimeout = setTimeout(() => {
+                console.log('E3 Helper: 執行繳交後自動同步...');
+                performAutoSync();
+                autoSyncTimeout = null;
+              }, 3000);
+              return;
             }
           }
         }
       }
-    });
-
-    // 監聽整個頁面
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
-  }
-
-  // 監聽 URL 變化（SPA 導航）
-  let lastUrl = window.location.href;
-  new MutationObserver(() => {
-    const currentUrl = window.location.href;
-    if (currentUrl !== lastUrl) {
-      lastUrl = currentUrl;
-      // URL 變化後重新設置監聽
-      setupAssignmentPageListener();
     }
-  }).observe(document.body, { childList: true, subtree: true });
+  });
+
+  // 監聽整個頁面（不斷開啟，因為 Moodle 是 SPA）
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
 }
 
 // 創建 log modal 面板
@@ -9177,8 +9185,6 @@ async function init() {
   if (window.location.hostname.includes('e3.nycu.edu.tw') || window.location.hostname.includes('e3p.nycu.edu.tw')) {
     window.addEventListener('load', () => {
       setTimeout(collectAssignmentInfo, 500);
-      // 頁面載入完成後也設置監聽
-      setupAssignmentPageListener();
     });
   }
 
