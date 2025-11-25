@@ -532,13 +532,16 @@ async function syncAssignments() {
       assignments.push(...keptOldAssignments);
     }
 
-    // 對於沒有課程名稱的作業，嘗試從 API 獲取完整資訊
+    // 對於沒有課程名稱或 URL 的作業，嘗試從 API 獲取完整資訊
     // 注意：這個檢查要在保留舊作業之後，才能涵蓋所有作業（包括保留的舊作業）
-    const assignmentsWithoutCourse = assignments.filter(a => !a.course || a.course === '');
-    if (assignmentsWithoutCourse.length > 0) {
-      console.log(`E3 Helper: 發現 ${assignmentsWithoutCourse.length} 個作業沒有課程名稱，嘗試從 API 獲取...`);
+    const assignmentsNeedingDetails = assignments.filter(a =>
+      (!a.course || a.course === '') || (!a.url || a.url === '')
+    );
 
-      for (const assignment of assignmentsWithoutCourse) {
+    if (assignmentsNeedingDetails.length > 0) {
+      console.log(`E3 Helper: 發現 ${assignmentsNeedingDetails.length} 個作業需要補齊詳細資訊（課程名稱或 URL），嘗試從 API 獲取...`);
+
+      for (const assignment of assignmentsNeedingDetails) {
         try {
           const eventDetailUrl = `https://e3p.nycu.edu.tw/lib/ajax/service.php?sesskey=${sesskey}`;
           const eventResponse = await fetchWithTimeout(eventDetailUrl, {
@@ -556,9 +559,17 @@ async function syncAssignments() {
             const eventData = await eventResponse.json();
             if (eventData && eventData[0] && eventData[0].data && eventData[0].data.event) {
               const event = eventData[0].data.event;
-              if (event.course && event.course.fullname) {
+
+              // 補齊課程名稱
+              if (event.course && event.course.fullname && (!assignment.course || assignment.course === '')) {
                 assignment.course = event.course.fullname;
                 console.log(`E3 Helper: 作業 ${assignment.eventId} (${assignment.name}) 補齊課程: ${event.course.fullname}`);
+              }
+
+              // 補齊 URL
+              if (event.url && (!assignment.url || assignment.url === '')) {
+                assignment.url = event.url;
+                console.log(`E3 Helper: 作業 ${assignment.eventId} (${assignment.name}) 補齊 URL: ${event.url}`);
               }
             }
           }
