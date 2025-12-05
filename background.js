@@ -174,7 +174,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 chrome.runtime.onInstalled.addListener(() => {
   console.log('E3 Helper: 擴充功能已安裝/更新');
 
-  // 設定每小時同步一次
+  // 設定每小時同步一次（作業、課程）
   chrome.alarms.create('syncE3Data', {
     periodInMinutes: 60
   });
@@ -182,6 +182,11 @@ chrome.runtime.onInstalled.addListener(() => {
   // 設定每小時檢查課程成員變動
   chrome.alarms.create('checkParticipants', {
     periodInMinutes: 60
+  });
+
+  // 設定每 6 小時同步公告和信件
+  chrome.alarms.create('syncAnnouncementsAndMessages', {
+    periodInMinutes: 360  // 6 小時
   });
 
   // 立即執行一次同步
@@ -235,6 +240,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   } else if (alarm.name === 'checkParticipants') {
     console.log('E3 Helper: 定時檢查課程成員變動');
     checkParticipantsInTabs();
+  } else if (alarm.name === 'syncAnnouncementsAndMessages') {
+    console.log('E3 Helper: 定時同步公告和信件');
+    syncAnnouncementsAndMessagesSilently();
   }
 });
 
@@ -1236,6 +1244,49 @@ async function fetchContentFromE3(url) {
 }
 
 // ==================== 載入公告和信件功能 ====================
+
+// 定時靜默同步公告和信件（不打開新標籤頁，只在有 E3 標籤頁時同步）
+async function syncAnnouncementsAndMessagesSilently() {
+  console.log('E3 Helper: 開始靜默同步公告和信件...', new Date().toLocaleTimeString());
+
+  try {
+    // 只查找已開啟的 E3 標籤頁，不主動開啟新的
+    const tabs = await chrome.tabs.query({
+      url: ['https://e3.nycu.edu.tw/*', 'https://e3p.nycu.edu.tw/*']
+    });
+
+    if (tabs.length === 0) {
+      console.log('E3 Helper: 沒有開啟的 E3 標籤頁，跳過公告/信件同步');
+      return { success: false, reason: 'no_e3_tab' };
+    }
+
+    // 使用第一個 E3 標籤頁
+    const tab = tabs[0];
+    console.log(`E3 Helper: 使用標籤頁 ${tab.id} 同步公告和信件`);
+
+    return new Promise((resolve) => {
+      chrome.tabs.sendMessage(tab.id, {
+        action: 'loadAnnouncementsAndMessagesInTab'
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error('E3 Helper: 靜默同步失敗', chrome.runtime.lastError);
+          resolve({ success: false, error: chrome.runtime.lastError.message });
+        } else if (response && response.success) {
+          console.log('E3 Helper: 公告和信件靜默同步完成');
+          // 更新 badge
+          updateBadgeFromStorage();
+          resolve({ success: true });
+        } else {
+          console.log('E3 Helper: 靜默同步未完成', response);
+          resolve({ success: false, error: response?.error });
+        }
+      });
+    });
+  } catch (error) {
+    console.error('E3 Helper: 靜默同步公告和信件時發生錯誤', error);
+    return { success: false, error: error.message };
+  }
+}
 
 // 在背景載入公告和信件（通過 E3 標籤頁）
 async function loadAnnouncementsAndMessagesInBackground() {
