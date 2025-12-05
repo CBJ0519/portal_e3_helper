@@ -2,7 +2,7 @@
 
 優化陽明交通大學 E3 學習平台的使用體驗。
 
-**Chrome 線上應用程式商店：**https://chromewebstore.google.com/detail/nycu-e3-helper/cmagonljljocpkfojkabhiedjafamoef
+**Chrome 線上應用程式商店：** https://chromewebstore.google.com/detail/nycu-e3-helper/cmagonljljocpkfojkabhiedjafamoef
 
 ## 功能特色
 
