@@ -84,7 +84,7 @@
 - **實時更新**：通知數量即時同步
 
 #### 9. 🤖 AI 智能助手（選配）
-- **AI 翻譯**：使用 Gemini 2.5 Flash 或 Google Translate
+- **AI 翻譯**：使用 Gemini 2.5 Flash-Lite 或 Google Translate
   - 🌐 中文→英文 / 英文→中文（繁體中文）
   - 完美保留段落格式、連結、附件
   - 支援公告與信件內容翻譯
@@ -253,7 +253,7 @@
 
 **會扣款嗎？**
 - ✅ **不會！** Google 提供 **$300 美元的免費試用額度**
-- ✅ Gemini 2.0 Flash 模型目前完全免費（每天 150 萬 tokens）
+- ✅ Gemini 2.5 Flash-Lite 模型成本極低（$0.10 / 百萬 input tokens）
 - ✅ 正常使用情況下，每月費用 < $1 美元（如果使用付費模型）
 - ✅ 可以設定預算警報，避免意外超支
 
@@ -368,13 +368,13 @@
 
 #### 3.4 選擇模型（選配）
 
-預設模型：`gemini-2.0-flash-exp`（推薦，免費）
+預設模型：`gemini-2.5-flash-lite`（推薦，速度最快、成本最低）
 
 其他可選模型：
 - `gemini-1.5-flash`：穩定版本，收費極低（$0.075 / 百萬 tokens）
 - `gemini-1.5-pro`：更強大但較貴（$1.25 / 百萬 tokens）
 
-**建議**：使用預設的 `gemini-2.0-flash-exp`，免費且效果好
+**建議**：使用預設的 `gemini-2.5-flash-lite`，速度最快且成本最低
 
 #### 3.5 儲存設定
 
@@ -457,7 +457,7 @@
 
 | 模型 | 免費額度 | 收費標準 | 實際費用（每月） |
 |------|---------|---------|----------------|
-| **Gemini 2.0 Flash** | 每天 150 萬 tokens | **完全免費** | $0 |
+| **Gemini 2.5 Flash-Lite** | 無限制 | $0.10 / $0.40 per 1M tokens | < $1 |
 | **Gemini 1.5 Flash** | 前 $300 免費試用 | $0.075 / 百萬 tokens | < $1 |
 | **Gemini 1.5 Pro** | 前 $300 免費試用 | $1.25 / 百萬 tokens | $5-10 |
 
@@ -475,7 +475,7 @@
 - **月費用**：< $0.075（約 2.5 元台幣）
 
 **結論**：
-- ✅ 使用 `gemini-2.0-flash-exp`（預設）：**完全免費**
+- ✅ 使用 `gemini-2.5-flash-lite`（預設）：**速度最快、成本最低**
 - ✅ 使用 `gemini-1.5-flash`：月費用 < $1 美元（約 30 元台幣）
 - ✅ $300 免費試用額度足夠使用 4,000 個月（約 333 年）
 
@@ -670,7 +670,7 @@
 ```
 ✅ 設定 Gemini API
 ✅ 連結帳單帳戶
-✅ 使用 gemini-2.0-flash-exp 模型
+✅ 使用 gemini-2.5-flash-lite 模型
 ✅ 翻譯品質：優秀
 ✅ 費用：$0（完全免費）
 ```
@@ -745,7 +745,7 @@ e3_helper/
 - 計算百分比與比重
 
 #### AI 翻譯與摘要
-- **Gemini 2.5 Flash API**：
+- **Gemini 2.5 Flash-Lite API**：
   - 繁體中文翻譯（Traditional Chinese Taiwan）
   - 保留段落格式的 prompt 工程
   - 禁用 thinking budget 避免 token 浪費

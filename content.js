@@ -3194,10 +3194,10 @@ function createSettingsModal() {
               <div class="e3-helper-setting-item">
                 <label class="e3-helper-setting-label-block">
                   <span>AI 模型</span>
-                  <input type="text" id="e3-helper-gemini-model" class="e3-helper-setting-input" value="gemini-2.5-flash" readonly style="background-color: #f5f5f5; cursor: not-allowed;">
+                  <input type="text" id="e3-helper-gemini-model" class="e3-helper-setting-input" value="gemini-2.5-flash-lite" readonly style="background-color: #f5f5f5; cursor: not-allowed;">
                 </label>
                 <div style="font-size: 12px; color: #666; margin-top: 4px;">
-                  使用 Gemini 2.5 Flash 模型：配額消耗少、準確度高
+                  使用 Gemini 2.5 Flash-Lite 模型：速度最快、成本最低
                 </div>
               </div>
 
@@ -3230,7 +3230,7 @@ function createSettingsModal() {
                   </table>
                   <div style="margin-top: 8px; font-size: 12px;">
                     💳 <strong>不用擔心費用：</strong>Google 提供 $300 美元免費試用額度，<span style="color: #4caf50; font-weight: bold;">不會自動扣款</span>！<br>
-                    💰 <strong>實際費用：</strong>Gemini 2.5 Flash 完全免費！
+                    💰 <strong>實際費用：</strong>Gemini 2.5 Flash-Lite 成本極低（$0.10/百萬tokens）！
                   </div>
                 </div>
 
@@ -3253,10 +3253,10 @@ function createSettingsModal() {
                 <br>
 
                 <strong>💰 費用與額度說明</strong><br>
-                • <strong>Gemini 2.5 Flash：完全免費</strong>（推薦使用）<br>
-                • 即使連結帳單，也不會扣款（因為使用免費模型）<br>
-                • $300 美元免費試用額度可用於其他 Google Cloud 服務<br>
-                • 每月使用成本：<strong>$0 元</strong>（100% 免費）<br><br>
+                • <strong>Gemini 2.5 Flash-Lite：速度最快、成本最低</strong>（推薦使用）<br>
+                • 價格：$0.10 / 百萬 input tokens，$0.40 / 百萬 output tokens<br>
+                • $300 美元免費試用額度可用於所有 Google Cloud 服務<br>
+                • 每月使用成本：<strong>< $1 美元</strong>（約 30 元台幣）<br><br>
 
                 <strong>❓ 常見問題</strong><br>
                 <div style="margin-left: 12px; font-size: 12px;">
@@ -3264,7 +3264,7 @@ function createSettingsModal() {
                   A: 這表示 API 請求額度用盡。<strong>請立即連結帳單帳戶</strong>，額度會從 15 RPM 提升到 1,000 RPM。<br><br>
 
                   <strong>Q: 連結帳單會被扣款嗎？</strong><br>
-                  A: 不會！使用 Gemini 2.5 Flash 完全免費，且 Google 提供 $300 試用額度，不會自動扣款。<br><br>
+                  A: 幾乎不會！Gemini 2.5 Flash-Lite 成本極低，正常使用每月 < $1 美元，且 Google 提供 $300 試用額度。<br><br>
 
                   <strong>Q: 如何確認帳單已連結？</strong><br>
                   A: 在 <a href="https://console.cloud.google.com/billing" target="_blank" style="color: #7c4dff;">Google Cloud Console - Billing</a> 查看，專案旁應顯示「Billing account linked」。
@@ -3354,7 +3354,7 @@ async function loadAISettings() {
   const aiSettings = storage.aiSettings || {
     enabled: false,
     geminiApiKey: '',
-    geminiModel: 'gemini-2.5-flash'
+    geminiModel: 'gemini-2.5-flash-lite'
   };
 
   document.getElementById('e3-helper-enable-ai').checked = aiSettings.enabled;
@@ -6473,7 +6473,7 @@ async function translateWithGemini(text, sourceLang, targetLang, apiKey) {
 
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: {
@@ -6628,7 +6628,7 @@ async function generateAISummary(text, apiKey) {
 
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: {

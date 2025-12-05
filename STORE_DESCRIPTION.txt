@@ -21,7 +21,7 @@ NYCU E3 Helper - 讓 E3 學習平台更好用！
 ・AI 摘要：快速總結長篇公告或信件重點
 ・格式保留：翻譯後保留原始段落格式、連結、附件
 ・點擊即用：翻譯與摘要功能整合在公告詳細頁面
-・Powered by Google Gemini 2.5 Flash
+・Powered by Google Gemini 2.5 Flash-Lite
 
 🔔 智能通知徽章（NEW!）
 ・浮動按鈕徽章：顯示未繳交作業數量，24 小時內到期的作業以紅色警示
@@ -171,7 +171,7 @@ NYCU E3 Helper - 讓 E3 學習平台更好用！
 ・HTML 解析技術自動檢測繳交狀態（NEW!）
 ・支援 dcpcmail 信件系統
 ・JSZip 函式庫支援批次下載
-・Google Gemini 2.5 Flash AI 模型
+・Google Gemini 2.5 Flash-Lite AI 模型
 ・智能 HTML 翻譯引擎（保留格式與連結）
 ・本地資料快取機制
 ・響應式 UI 設計
