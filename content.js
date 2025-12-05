@@ -3194,10 +3194,13 @@ function createSettingsModal() {
               <div class="e3-helper-setting-item">
                 <label class="e3-helper-setting-label-block">
                   <span>AI 模型</span>
-                  <input type="text" id="e3-helper-gemini-model" class="e3-helper-setting-input" value="gemini-2.5-flash-lite" readonly style="background-color: #f5f5f5; cursor: not-allowed;">
+                  <select id="e3-helper-gemini-model" class="e3-helper-setting-input" style="cursor: pointer;">
+                    <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite（速度最快）</option>
+                    <option value="gemini-2.5-flash">Gemini 2.5 Flash（更強大）</option>
+                  </select>
                 </label>
                 <div style="font-size: 12px; color: #666; margin-top: 4px;">
-                  使用 Gemini 2.5 Flash-Lite 模型：速度最快、成本最低
+                  Flash-Lite：速度快、成本低 ｜ Flash：推理能力更強
                 </div>
               </div>
 
@@ -6445,8 +6448,9 @@ async function translateText(text, sourceLang, targetLang) {
 
     if (aiSettings.enabled && aiSettings.geminiApiKey) {
       // 使用 Gemini API 翻譯
-      console.log('E3 Helper: 使用 Gemini AI 翻譯');
-      return await translateWithGemini(text, sourceLang, targetLang, aiSettings.geminiApiKey);
+      const model = aiSettings.geminiModel || 'gemini-2.5-flash-lite';
+      console.log(`E3 Helper: 使用 ${model} 翻譯`);
+      return await translateWithGemini(text, sourceLang, targetLang, aiSettings.geminiApiKey, model);
     } else {
       // 使用 Google Translate 免費服務
       console.log('E3 Helper: 使用 Google Translate 免費服務');
@@ -6460,7 +6464,7 @@ async function translateText(text, sourceLang, targetLang) {
 }
 
 // 使用 Gemini API 翻譯
-async function translateWithGemini(text, sourceLang, targetLang, apiKey) {
+async function translateWithGemini(text, sourceLang, targetLang, apiKey, model = 'gemini-2.5-flash-lite') {
   const langMap = {
     'zh-CN': 'Traditional Chinese (Taiwan)',
     'zh-TW': 'Traditional Chinese (Taiwan)',
@@ -6473,7 +6477,7 @@ async function translateWithGemini(text, sourceLang, targetLang, apiKey) {
 
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: {
@@ -6623,12 +6627,12 @@ async function translateWithGoogleFree(text, sourceLang, targetLang) {
 }
 
 // 使用 Gemini API 生成摘要
-async function generateAISummary(text, apiKey) {
+async function generateAISummary(text, apiKey, model = 'gemini-2.5-flash-lite') {
   const prompt = `Summarize in 100 words or less (no markdown):\n${text}`;
 
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: {
@@ -6841,7 +6845,8 @@ async function showAnnouncementDetails(itemId, itemType) {
 
       try {
         const textContent = contentContainer.innerText || contentContainer.textContent;
-        const summary = await generateAISummary(textContent, aiSettings.geminiApiKey);
+        const model = aiSettings.geminiModel || 'gemini-2.5-flash-lite';
+        const summary = await generateAISummary(textContent, aiSettings.geminiApiKey, model);
 
         contentContainer.innerHTML = `<div style="white-space: pre-wrap; background: #f0f4ff; padding: 12px; border-radius: 6px; border-left: 3px solid #9c27b0;"><div style="font-weight: 600; color: #9c27b0; margin-bottom: 8px;">🤖 AI 摘要</div>${escapeHtml(summary)}</div>`;
         currentTranslation = contentContainer.innerHTML;
