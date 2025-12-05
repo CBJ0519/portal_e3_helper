@@ -62,8 +62,33 @@ function interceptConsole() {
 // ⭐ 立即執行攔截器
 interceptConsole();
 
-// 更新日誌顯示（如果面板已打開）
+// 日誌更新節流控制
+let logUpdateTimeout = null;
+let logUpdatePending = false;
+
+// 更新日誌顯示（如果面板已打開）- 帶節流
 function updateLogDisplay() {
+  // 如果已有待處理的更新，標記並返回
+  if (logUpdateTimeout) {
+    logUpdatePending = true;
+    return;
+  }
+
+  // 執行實際更新
+  doUpdateLogDisplay();
+
+  // 設定節流延遲（100ms）
+  logUpdateTimeout = setTimeout(() => {
+    logUpdateTimeout = null;
+    if (logUpdatePending) {
+      logUpdatePending = false;
+      doUpdateLogDisplay();
+    }
+  }, 100);
+}
+
+// 實際執行日誌更新
+function doUpdateLogDisplay() {
   const logModal = document.getElementById('e3-helper-log-modal');
   const logContent = document.getElementById('e3-helper-log-content');
 
@@ -237,7 +262,7 @@ function copyLogsToClipboard() {
   }).join('\n');
 
   navigator.clipboard.writeText(text).then(() => {
-    alert('日誌已複製到剪貼簿');
+    showTemporaryMessage('日誌已複製到剪貼簿', 'success');
   }).catch(err => {
     console.error('複製失敗:', err);
   });
@@ -1537,10 +1562,50 @@ async function loadAssignments() {
   });
 }
 
-// 儲存作業列表
+// 儲存作業列表（防抖版本，避免多次同時寫入）
+let saveAssignmentsTimeout = null;
+let saveAssignmentsPending = false;
+
 async function saveAssignments() {
-  chrome.storage.local.set({ assignments: allAssignments });
-  console.log(`E3 Helper: 已儲存 ${allAssignments.length} 個作業到 storage`);
+  // 如果已經有待處理的儲存，標記需要再次儲存
+  if (saveAssignmentsTimeout) {
+    saveAssignmentsPending = true;
+    return;
+  }
+
+  // 設定防抖延遲
+  saveAssignmentsTimeout = setTimeout(async () => {
+    try {
+      await chrome.storage.local.set({ assignments: allAssignments });
+      console.log(`E3 Helper: 已儲存 ${allAssignments.length} 個作業到 storage`);
+    } catch (error) {
+      console.error('E3 Helper: 儲存作業失敗', error);
+    }
+
+    saveAssignmentsTimeout = null;
+
+    // 如果在等待期間有新的儲存請求，再次執行
+    if (saveAssignmentsPending) {
+      saveAssignmentsPending = false;
+      saveAssignments();
+    }
+  }, 300);
+}
+
+// 立即儲存作業（用於關鍵操作）
+async function saveAssignmentsImmediate() {
+  if (saveAssignmentsTimeout) {
+    clearTimeout(saveAssignmentsTimeout);
+    saveAssignmentsTimeout = null;
+  }
+  saveAssignmentsPending = false;
+
+  try {
+    await chrome.storage.local.set({ assignments: allAssignments });
+    console.log(`E3 Helper: 已立即儲存 ${allAssignments.length} 個作業到 storage`);
+  } catch (error) {
+    console.error('E3 Helper: 儲存作業失敗', error);
+  }
 }
 
 // 切換作業狀態（循環：未完成 → 已繳交 → 未完成）
@@ -1560,7 +1625,7 @@ async function toggleAssignmentStatus(eventId) {
 
   assignment.manualStatus = newStatus;
   await saveAssignmentStatus(eventId, newStatus);
-  await saveAssignments(); // 同時更新作業列表
+  await saveAssignmentsImmediate(); // 立即儲存作業列表
 
   // 重新檢查緊急通知
   const now = new Date().getTime();
@@ -2266,7 +2331,7 @@ function createSidebar() {
         startScanBtn.dataset.bound = 'true';
         startScanBtn.addEventListener('click', () => {
           if (selectedCourses.size === 0) {
-            alert('請至少選擇一個課程');
+            showTemporaryMessage('請至少選擇一個課程', 'warning');
             return;
           }
           courseSelectContainer.style.display = 'none';
@@ -2458,7 +2523,7 @@ function createSidebar() {
                   reloadBtn.disabled = false;
 
                   // 顯示錯誤提示
-                  alert('載入失敗：' + error.message);
+                  showTemporaryMessage('載入失敗：' + error.message, 'error');
                 }
               });
             }
@@ -2674,7 +2739,7 @@ function createSidebar() {
       const editId = document.getElementById('e3-helper-edit-assignment-id').value;
 
       if (!name || !date || !time) {
-        alert('請填寫必填欄位');
+        showTemporaryMessage('請填寫必填欄位', 'warning');
         return;
       }
 
@@ -3320,7 +3385,7 @@ async function saveAISettings() {
   await chrome.storage.local.set({ aiSettings: aiSettings });
 
   console.log('E3 Helper: AI 設定已儲存', aiSettings);
-  alert('設定已儲存！');
+  showTemporaryMessage('設定已儲存！', 'success');
 }
 
 // 測試 AI 連接
@@ -3374,14 +3439,14 @@ async function testAIConnection() {
       statusText.textContent = '連接失敗';
       statusDiv.style.color = '#f44336';
       console.error('E3 Helper: Gemini API 連接測試失敗', errorData);
-      alert(`連接失敗：${errorData.error?.message || '未知錯誤'}`);
+      showTemporaryMessage(`連接失敗：${errorData.error?.message || '未知錯誤'}`, 'error');
     }
   } catch (error) {
     statusIcon.textContent = '❌';
     statusText.textContent = '連接失敗';
     statusDiv.style.color = '#f44336';
     console.error('E3 Helper: Gemini API 連接測試失敗', error);
-    alert(`連接失敗：${error.message}`);
+    showTemporaryMessage(`連接失敗：${error.message}`, 'error');
   } finally {
     testBtn.disabled = false;
   }
@@ -3432,14 +3497,29 @@ async function updateCourseOptions() {
   console.log(`E3 Helper: 已載入 ${sortedCourses.length} 個課程選項`);
 }
 
-// 顯示臨時訊息
-function showTemporaryMessage(message) {
+// 顯示臨時訊息（Toast 通知）
+// type: 'success' | 'error' | 'warning' | 'info'
+function showTemporaryMessage(message, type = 'success', duration = 3000) {
+  const colors = {
+    success: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+    error: 'linear-gradient(135deg, #ff6b6b 0%, #ee5a6f 100%)',
+    warning: 'linear-gradient(135deg, #f39c12 0%, #e67e22 100%)',
+    info: 'linear-gradient(135deg, #3498db 0%, #2980b9 100%)'
+  };
+
+  const icons = {
+    success: '✓',
+    error: '✕',
+    warning: '⚠',
+    info: 'ℹ'
+  };
+
   const messageEl = document.createElement('div');
   messageEl.style.cssText = `
     position: fixed;
     top: 20px;
     right: 20px;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    background: ${colors[type] || colors.success};
     color: white;
     padding: 12px 24px;
     border-radius: 8px;
@@ -3448,14 +3528,16 @@ function showTemporaryMessage(message) {
     font-size: 14px;
     font-weight: 600;
     animation: slideIn 0.3s ease;
+    max-width: 350px;
+    word-wrap: break-word;
   `;
-  messageEl.textContent = message;
+  messageEl.innerHTML = `<span style="margin-right: 8px;">${icons[type] || icons.success}</span>${message}`;
   document.body.appendChild(messageEl);
 
   setTimeout(() => {
     messageEl.style.animation = 'slideOut 0.3s ease';
     setTimeout(() => messageEl.remove(), 300);
-  }, 2000);
+  }, duration);
 }
 
 // 顯示歡迎訊息（首次使用）
@@ -3630,11 +3712,11 @@ async function updateSidebarContent() {
           }
           window.open(eventDetails.url, '_blank');
         } else {
-          alert('無法獲取作業連結，請稍後再試或直接訪問 E3');
+          showTemporaryMessage('無法獲取作業連結，請稍後再試或直接訪問 E3', 'error');
         }
       } catch (error) {
         console.error('E3 Helper: 獲取作業連結失敗', error);
-        alert('無法獲取作業連結：' + error.message);
+        showTemporaryMessage('無法獲取作業連結：' + error.message, 'error');
       } finally {
         // 恢復原始文字和樣式
         nameEl.textContent = originalText;
@@ -5014,7 +5096,7 @@ async function displayCourseGradeList() {
               loadBtn.style.opacity = '1';
               loadBtn.style.cursor = 'pointer';
               loadBtn.textContent = '🔄 載入成績資料';
-              alert('載入成績失敗：' + e.message);
+              showTemporaryMessage('載入成績失敗：' + e.message, 'error');
             });
           });
         }
@@ -5691,8 +5773,16 @@ async function loadMessages() {
     // 儲存到 storage
     await chrome.storage.local.set({ messages: allMessages });
     console.log(`E3 Helper: 信件載入完成，共 ${allMessages.length} 個`);
+
+    // 顯示結果給用戶
+    if (allMessages.length > 0) {
+      showTemporaryMessage(`已載入 ${allMessages.length} 封信件`, 'success');
+    } else if (allCourses.length > 0) {
+      showTemporaryMessage('沒有找到信件，收件匣可能是空的', 'info');
+    }
   } catch (error) {
     console.error('E3 Helper: 載入信件時發生錯誤:', error);
+    showTemporaryMessage('載入信件失敗：' + error.message, 'error');
   }
 }
 
@@ -6216,7 +6306,7 @@ async function displayAnnouncements() {
     const announcementItems = filteredItems.map(item => {
       const readSet = item.type === 'announcement' ? readAnnouncements : readMessages;
       const isRead = readSet.has(item.id);
-      const timeAgo = getTimeAgo(item.timestamp);
+      const timeAgo = getTimeAgoText(item.timestamp);
       const typeIcon = item.type === 'announcement' ? '📢' : '📨';
       const typeLabel = item.type === 'announcement' ? '公告' : '信件';
 
@@ -6765,7 +6855,7 @@ async function showAnnouncementDetails(itemId, itemType) {
         }, 2000);
       } catch (error) {
         console.error('E3 Helper: AI 摘要失敗', error);
-        alert('AI 摘要失敗：' + error.message);
+        showTemporaryMessage('AI 摘要失敗：' + error.message, 'error');
         aiSummaryBtn.innerHTML = '🤖 AI摘要';
       } finally {
         aiSummaryBtn.disabled = false;
@@ -6800,7 +6890,7 @@ async function showAnnouncementDetails(itemId, itemType) {
         }, 2000);
       } catch (error) {
         console.error('E3 Helper: 翻譯失敗', error);
-        alert('翻譯失敗：' + error.message);
+        showTemporaryMessage('翻譯失敗：' + error.message, 'error');
         translateZhBtn.innerHTML = '🌐 中→英';
       } finally {
         translateZhBtn.disabled = false;
@@ -6835,7 +6925,7 @@ async function showAnnouncementDetails(itemId, itemType) {
         }, 2000);
       } catch (error) {
         console.error('E3 Helper: 翻譯失敗', error);
-        alert('翻譯失敗：' + error.message);
+        showTemporaryMessage('翻譯失敗：' + error.message, 'error');
         translateEnBtn.innerHTML = '🌐 英→中';
       } finally {
         translateEnBtn.disabled = false;
@@ -7007,26 +7097,6 @@ async function loadItemPreview(itemId, itemType, itemUrl, previewContainer) {
       </div>
     `;
   }
-}
-
-// 計算時間差
-function getTimeAgo(timestamp) {
-  const now = Date.now();
-  const diff = now - timestamp;
-
-  const minutes = Math.floor(diff / 60000);
-  const hours = Math.floor(diff / 3600000);
-  const days = Math.floor(diff / 86400000);
-  const weeks = Math.floor(diff / 604800000);
-
-  if (minutes < 1) return '剛剛';
-  if (minutes < 60) return `${minutes} 分鐘前`;
-  if (hours < 24) return `${hours} 小時前`;
-  if (days < 7) return `${days} 天前`;
-  if (weeks < 4) return `${weeks} 週前`;
-
-  const date = new Date(timestamp);
-  return `${date.getMonth() + 1}/${date.getDate()}`;
 }
 
 // 掃描選中的課程
@@ -8417,7 +8487,7 @@ function bindDownloadButtons() {
 // 分開下載選取的檔案
 async function downloadSeparately() {
   if (selectedPDFs.size === 0) {
-    alert('請先選取要下載的檔案');
+    showTemporaryMessage('請先選取要下載的檔案', 'warning');
     return;
   }
 
@@ -8531,7 +8601,7 @@ async function downloadSeparately() {
 
   } catch (e) {
     console.error('E3 Helper: 下載時發生錯誤:', e);
-    alert('下載失敗，請查看 Console 了解詳情');
+    showTemporaryMessage('下載失敗，請查看 Console 了解詳情', 'error');
 
     if (downloadBtn) {
       downloadBtn.disabled = false;
@@ -8552,13 +8622,13 @@ async function downloadSeparately() {
 // 批量下載選取的檔案（打包成 ZIP）
 async function downloadAsZip() {
   if (selectedPDFs.size === 0) {
-    alert('請先選取要下載的檔案');
+    showTemporaryMessage('請先選取要下載的檔案', 'warning');
     return;
   }
 
   // 檢查 JSZip 是否已載入
   if (typeof JSZip === 'undefined') {
-    alert('正在載入打包工具，請稍後再試...');
+    showTemporaryMessage('正在載入打包工具，請稍後再試...', 'info');
     return;
   }
 
@@ -8688,7 +8758,7 @@ async function downloadAsZip() {
     }
 
     if (successCount === 0) {
-      alert('沒有成功下載任何檔案');
+      showTemporaryMessage('沒有成功下載任何檔案', 'warning');
       if (downloadBtn) {
         downloadBtn.disabled = false;
         downloadBtn.textContent = '打包下載';
@@ -8769,7 +8839,7 @@ async function downloadAsZip() {
 
   } catch (e) {
     console.error('E3 Helper: 打包 ZIP 時發生錯誤:', e);
-    alert('打包失敗，請查看 Console 了解詳情');
+    showTemporaryMessage('打包失敗，請查看 Console 了解詳情', 'error');
 
     if (downloadBtn) {
       downloadBtn.disabled = false;
@@ -9031,7 +9101,7 @@ function updateSyncStatus() {
         showLoginWarning();
       } else if (sync.success) {
         // 顯示最後同步時間
-        const timeAgo = getTimeAgo(sync.timestamp);
+        const timeAgo = getTimeAgoCompact(sync.timestamp);
         syncTimeEl.textContent = `✓ ${timeAgo}前同步`;
       } else {
         // 顯示錯誤
@@ -9070,8 +9140,8 @@ function removeLoginWarning() {
   }
 }
 
-// 計算時間差
-function getTimeAgo(timestamp) {
+// 計算時間差（緊湊格式，用於同步狀態顯示）
+function getTimeAgoCompact(timestamp) {
   const now = Date.now();
   const diff = now - timestamp;
 
@@ -9113,8 +9183,17 @@ function manualSync() {
       syncBtn.textContent = '🔄 同步';
     }
     if (syncTimeEl) {
-      syncTimeEl.textContent = '✕ 同步超時 - 請檢查網路或重試';
+      syncTimeEl.innerHTML = '✕ 同步超時 <button id="e3-helper-retry-sync" style="margin-left: 8px; padding: 2px 8px; background: #667eea; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px;">重試</button>';
+      // 綁定重試按鈕
+      const retryBtn = document.getElementById('e3-helper-retry-sync');
+      if (retryBtn) {
+        retryBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          manualSync();
+        });
+      }
     }
+    showTemporaryMessage('同步超時，請檢查網路連線', 'warning');
     console.error('E3 Helper: 同步超時（60秒）');
   }, 60000);
 
@@ -9132,7 +9211,7 @@ function manualSync() {
       if (syncTimeEl) {
         syncTimeEl.textContent = '✕ 通訊失敗';
       }
-      alert('同步失敗：無法與背景服務通訊');
+      showTemporaryMessage('同步失敗：無法與背景服務通訊', 'error');
       return;
     }
 
@@ -9142,7 +9221,7 @@ function manualSync() {
           syncTimeEl.innerHTML = '⚠️ 需要登入';
         }
         showLoginWarning();
-        alert('E3 登入已過期，請先登入 E3');
+        showTemporaryMessage('E3 登入已過期，請先登入 E3', 'warning');
       } else if (response.success) {
         removeLoginWarning();
         if (syncTimeEl) {
@@ -9181,7 +9260,7 @@ function manualSync() {
         if (syncTimeEl) {
           syncTimeEl.textContent = '✕ 同步失敗';
         }
-        alert(`同步失敗: ${response.error}`);
+        showTemporaryMessage(`同步失敗: ${response.error}`, 'error');
       }
     } else {
       if (syncTimeEl) {
