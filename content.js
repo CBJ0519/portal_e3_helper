@@ -5506,6 +5506,9 @@ async function loadNotifications() {
     } else if (notification.type === 'announcement') {
       icon = '📢';
       typeText = '公告';
+    } else if (notification.type === 'update') {
+      icon = '🎉';
+      typeText = '版本更新';
     } else if (notification.type === 'participant-change') {
       icon = '📊';
       typeText = '成員變動';
@@ -5573,6 +5576,19 @@ async function loadNotifications() {
           await chrome.storage.local.set({ notifications });
           await updateNotificationBadge();
         }
+      }
+
+      // type='update' 的卡片沒有 URL，改成再彈 What's New（讓使用者隨時回看本版變更）
+      if (notificationType === 'update') {
+        try {
+          const currentVersion = chrome.runtime.getManifest().version;
+          const { latestChangelog } = await chrome.storage.local.get(['latestChangelog']);
+          const html = (latestChangelog && latestChangelog.version === currentVersion) ? latestChangelog.html : '';
+          showChangelogModal(currentVersion, html);
+        } catch (e) {
+          console.warn('E3 Helper: 重開版本更新視窗失敗', e.message);
+        }
+        return;
       }
 
       // 如果有 URL，打開連結
@@ -9323,6 +9339,99 @@ function bindSyncButton() {
   }
 }
 
+// ==================== 版本更新通知（What's New）====================
+
+// 建立 changelog modal DOM（idempotent）
+// 不複用 add-assignment-modal 避免 DOM 撞用（使用者剛好在新增作業時跳版本更新會洗掉表單）
+function createChangelogModal() {
+  if (document.getElementById('e3-helper-changelog-modal')) return;
+
+  const modal = document.createElement('div');
+  modal.id = 'e3-helper-changelog-modal';
+  modal.style.cssText = `
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 10002;
+    justify-content: center;
+    align-items: center;
+  `;
+  modal.innerHTML = `
+    <div style="background: white; border-radius: 12px; padding: 24px; width: 90%; max-width: 520px; max-height: 80vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.2);">
+      <h3 style="margin: 0 0 12px; font-size: 18px; color: #7c4dff; display: flex; align-items: center; gap: 8px;">
+        <span id="e3-helper-changelog-title">🎉 已更新</span>
+      </h3>
+      <div id="e3-helper-changelog-body" style="font-size: 13px; color: #333; line-height: 1.6; margin-bottom: 16px;"></div>
+      <div style="display: flex; gap: 8px;">
+        <button type="button" id="e3-helper-changelog-close" style="flex: 1; padding: 12px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600;">我知道了</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  // 關閉收尾：寫 lastSeenVersion + 標 type='update' 通知 read + 更新 badge
+  // 同步做這幾件才形成閉環，避免下次再彈或 badge 不歸零
+  const closeAndPersist = async () => {
+    modal.style.display = 'none';
+    try {
+      const currentVersion = chrome.runtime.getManifest().version;
+      await chrome.storage.local.set({ lastSeenVersion: currentVersion });
+
+      const storage = await chrome.storage.local.get(['notifications']);
+      const notifications = storage.notifications || [];
+      let touched = false;
+      for (const n of notifications) {
+        if (n.type === 'update' && !n.read) { n.read = true; touched = true; }
+      }
+      if (touched) {
+        await chrome.storage.local.set({ notifications });
+        if (typeof updateNotificationBadge === 'function') await updateNotificationBadge();
+      }
+    } catch (e) {
+      console.warn('E3 Helper: 收尾版本更新狀態失敗', e.message);
+    }
+  };
+
+  modal.querySelector('#e3-helper-changelog-close').addEventListener('click', closeAndPersist);
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeAndPersist(); });
+}
+
+// 顯示 changelog modal
+// bodyHtml 由 background 預先 fetch+parse CHANGELOG.md 寫入 storage.latestChangelog 提供
+// 缺內容時用 fallback 文案，不阻擋彈窗
+function showChangelogModal(version, bodyHtml) {
+  createChangelogModal();
+  const modal = document.getElementById('e3-helper-changelog-modal');
+  document.getElementById('e3-helper-changelog-title').textContent = `🎉 已更新到 v${version}`;
+  const fallback = `<p style="margin: 6px 0;">已更新到 v${version}。本版變更請見專案 CHANGELOG.md。</p>`;
+  const html = bodyHtml ? sanitizeHtml(bodyHtml) : fallback;
+  document.getElementById('e3-helper-changelog-body').innerHTML = html;
+  modal.style.display = 'flex';
+}
+
+// 偵測版本變化，需要時彈 What's New
+// 首次安裝由 background onInstalled (reason='install') 寫 lastSeenVersion=currentVersion 抑制此彈窗
+// 老用戶第一次升到含此 feature 的版本時 lastSeenVersion 為 undefined，但 background 也還沒
+// 對應 latestChangelog → 此情況靜默寫回 lastSeenVersion 不彈窗，通知中心那條兜底；
+// 真正 reason='update' 路徑 background 會先寫好 latestChangelog 才會走到彈窗
+async function checkVersionUpdate() {
+  try {
+    const currentVersion = chrome.runtime.getManifest().version;
+    const { lastSeenVersion, latestChangelog } = await chrome.storage.local.get(['lastSeenVersion', 'latestChangelog']);
+    if (lastSeenVersion === currentVersion) return;
+
+    if (!latestChangelog || latestChangelog.version !== currentVersion) {
+      await chrome.storage.local.set({ lastSeenVersion: currentVersion });
+      return;
+    }
+
+    showChangelogModal(currentVersion, latestChangelog.html);
+  } catch (e) {
+    console.warn('E3 Helper: 版本更新檢查失敗', e.message);
+  }
+}
+
 // 初始化
 async function init() {
   // 檢查 extension context 是否有效
@@ -9417,6 +9526,9 @@ async function init() {
 
   // 每 5 分鐘更新一次同步狀態顯示
   setInterval(updateSyncStatus, 300000);
+
+  // 偵測版本更新並彈 What's New（modal append 到 body，不依賴 sidebar 已建好）
+  checkVersionUpdate();
 }
 
 // 監聽來自 background script 的訊息

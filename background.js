@@ -263,15 +263,100 @@ async function sweepOrphanBgTab() {
   }
 }
 
+// 從 CHANGELOG.md 抓指定版本區塊轉成 HTML 字串，寫入 storage 給 content.js 渲染 What's New
+// 沒對應區塊或 fetch 失敗仍會推通知，使用者打開側邊欄會看到 fallback 文案
+async function notifyVersionUpdate(version) {
+  try {
+    let changelogHtml = '';
+    try {
+      const response = await fetch(chrome.runtime.getURL('CHANGELOG.md'));
+      if (response.ok) {
+        const md = await response.text();
+        changelogHtml = parseChangelogForVersion(md, version);
+      }
+    } catch (e) {
+      console.warn('E3 Helper: 抓取 CHANGELOG 失敗，What\'s New 將用 fallback 文案', e.message);
+    }
+
+    await chrome.storage.local.set({
+      latestChangelog: { version, html: changelogHtml }
+    });
+
+    const now = Date.now();
+    const storage = await chrome.storage.local.get(['notifications']);
+    const notifications = storage.notifications || [];
+    notifications.unshift({
+      id: `update-${version}-${now}`,
+      type: 'update',
+      title: `🎉 已更新到 v${version}`,
+      message: '打開側邊欄會自動顯示本版變更，或點此再次查看',
+      timestamp: now,
+      read: false,
+      url: ''
+    });
+    if (notifications.length > 50) notifications.splice(50);
+    await chrome.storage.local.set({ notifications });
+    console.log(`E3 Helper: 已推送版本更新通知 v${version}`);
+  } catch (error) {
+    console.error('E3 Helper: 推送版本更新通知失敗', error);
+  }
+}
+
+// 從 markdown 抓 `## [version] - date` 區塊內容轉簡易 HTML
+// 解析範圍：該版本標題的下一行 → 下一個 `## [` 或 `---` 之前
+// 支援 ### 子標題、`- 條列`、`**粗體**`、普通段落
+function parseChangelogForVersion(markdown, version) {
+  const escaped = version.replace(/[.]/g, '\\.');
+  const re = new RegExp(`^## \\[${escaped}\\][^\\n]*\\n([\\s\\S]*?)(?=\\n## \\[|\\n---\\s*\\n|$)`, 'm');
+  const m = markdown.match(re);
+  if (!m) return '';
+
+  const block = m[1].trim();
+  const lines = block.split('\n');
+  let html = '';
+  let inList = false;
+
+  const flushList = () => { if (inList) { html += '</ul>'; inList = false; } };
+  const inlineFmt = (s) => s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) { flushList(); continue; }
+    if (line.startsWith('### ')) {
+      flushList();
+      html += `<h4 style="margin: 12px 0 6px; font-size: 14px; color: #7c4dff;">${inlineFmt(line.slice(4))}</h4>`;
+    } else if (line.startsWith('- ')) {
+      if (!inList) { html += '<ul style="margin: 0 0 8px; padding-left: 20px;">'; inList = true; }
+      html += `<li style="margin-bottom: 4px;">${inlineFmt(line.slice(2))}</li>`;
+    } else {
+      flushList();
+      html += `<p style="margin: 6px 0;">${inlineFmt(line)}</p>`;
+    }
+  }
+  flushList();
+  return html;
+}
+
 // 安裝／更新時設定定時同步
-chrome.runtime.onInstalled.addListener(() => {
-  console.log('E3 Helper: 擴充功能已安裝/更新');
+chrome.runtime.onInstalled.addListener((details) => {
+  const reason = details && details.reason;
+  console.log(`E3 Helper: 擴充功能已安裝/更新 reason=${reason}`);
 
   setupAlarms();
   sweepOrphanBgTab();
 
   // 立即執行一次同步
   syncE3Data();
+
+  // 版本更新通知：首次安裝靜默；更新時推一條通知到通知中心並寫入 CHANGELOG 區塊
+  // install → 寫 lastSeenVersion 抑制首次彈窗（避免新使用者一打開就被 What's New 干擾）
+  // update  → 不動 lastSeenVersion，由 content.js 在 init 偵測落後並彈窗
+  const currentVersion = chrome.runtime.getManifest().version;
+  if (reason === 'install') {
+    chrome.storage.local.set({ lastSeenVersion: currentVersion });
+  } else if (reason === 'update') {
+    notifyVersionUpdate(currentVersion);
+  }
 
   // 初始化 badge 計數
   updateBadgeFromStorage();
